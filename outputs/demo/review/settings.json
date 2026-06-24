@@ -1,0 +1,10 @@
+{
+  "weak_threshold": 0.3,
+  "target_f1": 0.8,
+  "entity_types": [
+    "PER",
+    "LOC",
+    "OFF"
+  ],
+  "min_reviewed_segments": 300
+}

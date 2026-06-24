@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>明实录实体抽取标注查看器</title>
+<style>
+  :root {
+    --paper: #f4efe3;
+    --paper-2: #fffaf0;
+    --ink: #242018;
+    --muted: #766d5d;
+    --line: rgba(58, 43, 22, .18);
+    --per: #b83a2f;
+    --per-bg: #ffe7df;
+    --loc: #24765f;
+    --loc-bg: #dff3e9;
+    --off: #9b691f;
+    --off-bg: #faedcf;
+    --shadow: 0 18px 50px rgba(53, 38, 18, .14);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 10% 8%, rgba(184, 58, 47, .15), transparent 28rem),
+      radial-gradient(circle at 88% 12%, rgba(36, 118, 95, .14), transparent 26rem),
+      linear-gradient(135deg, #efe4ce, var(--paper));
+    font-family: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif;
+  }
+
+  .shell {
+    width: min(1180px, calc(100% - 32px));
+    margin: 0 auto;
+    padding: 30px 0 42px;
+  }
+
+  .hero {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 18px;
+    align-items: end;
+    margin-bottom: 18px;
+  }
+
+  h1 {
+    margin: 0 0 8px;
+    font-size: clamp(26px, 4vw, 46px);
+    letter-spacing: .04em;
+  }
+
+  .source {
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .stats {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .stat {
+    min-width: 88px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 10px 14px;
+    background: rgba(255, 250, 240, .74);
+    box-shadow: 0 8px 24px rgba(53, 38, 18, .08);
+  }
+
+  .stat b {
+    display: block;
+    font-size: 23px;
+    line-height: 1;
+  }
+
+  .stat span {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    display: grid;
+    grid-template-columns: 1fr minmax(220px, 320px);
+    gap: 12px;
+    padding: 12px 0;
+    backdrop-filter: blur(14px);
+  }
+
+  .legend,
+  .search {
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: rgba(255, 250, 240, .82);
+    box-shadow: 0 10px 30px rgba(53, 38, 18, .08);
+  }
+
+  .legend {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 10px;
+  }
+
+  button {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 8px 13px;
+    color: var(--ink);
+    background: #fffdf7;
+    cursor: pointer;
+    font: inherit;
+    transition: transform .18s ease, opacity .18s ease, background .18s ease;
+  }
+
+  button:hover { transform: translateY(-1px); }
+  button.off { opacity: .42; }
+
+  .dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 7px;
+    border-radius: 50%;
+    vertical-align: -1px;
+  }
+
+  .search {
+    width: 100%;
+    padding: 0 14px;
+    font: inherit;
+    outline: none;
+  }
+
+  main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 18px;
+    align-items: start;
+  }
+
+  .passage,
+  .panel {
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    background: rgba(255, 250, 240, .9);
+    box-shadow: var(--shadow);
+  }
+
+  .passage {
+    min-height: 68vh;
+    padding: clamp(18px, 3vw, 34px);
+    font-size: clamp(18px, 2.2vw, 24px);
+    line-height: 2.12;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .ent {
+    position: relative;
+    border-radius: 7px;
+    padding: 1px 3px;
+    cursor: pointer;
+    transition: filter .18s ease, outline-color .18s ease;
+  }
+
+  .ent.PER { background: var(--per-bg); box-shadow: inset 0 -3px var(--per); }
+  .ent.LOC { background: var(--loc-bg); box-shadow: inset 0 -3px var(--loc); }
+  .ent.OFF { background: var(--off-bg); box-shadow: inset 0 -3px var(--off); }
+  .ent.unlinked { outline: 1px dashed rgba(36, 32, 24, .45); outline-offset: 1px; }
+  .ent.hidden { background: none; box-shadow: none; outline: none; cursor: text; }
+  .ent.active { filter: brightness(.92) saturate(1.15); outline: 2px solid currentColor; }
+  mark { background: #f8d96d; border-radius: 5px; padding: 0 2px; }
+
+  .panel {
+    position: sticky;
+    top: 88px;
+    padding: 18px;
+  }
+
+  .panel h2 {
+    margin: 0 0 8px;
+    font-size: 20px;
+  }
+
+  .empty {
+    color: var(--muted);
+    line-height: 1.7;
+  }
+
+  .tag {
+    display: inline-block;
+    margin-bottom: 10px;
+    border-radius: 999px;
+    padding: 3px 10px;
+    color: #fff;
+    font-size: 12px;
+  }
+
+  .kv {
+    margin: 9px 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .kv b { color: var(--ink); font-weight: 600; }
+  a { color: #7d271f; text-underline-offset: 3px; }
+
+  .error {
+    border: 1px solid rgba(184, 58, 47, .3);
+    border-radius: 18px;
+    padding: 18px;
+    background: #fff7f3;
+  }
+
+  @media (max-width: 860px) {
+    .hero,
+    .toolbar,
+    main {
+      grid-template-columns: 1fr;
+    }
+
+    .stats {
+      justify-content: flex-start;
+    }
+
+    .panel {
+      position: static;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <section class="hero">
+    <div>
+      <h1 id="title">明实录实体抽取标注查看器</h1>
+      <div class="source" id="source">Loading entities.json...</div>
+    </div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="toolbar">
+    <div class="legend" id="legend"></div>
+    <input class="search" id="search" placeholder="搜索正文或实体，例如 夏原吉、朝鲜、户部尚书">
+  </section>
+
+  <main>
+    <article class="passage" id="passage"></article>
+    <aside class="panel" id="panel">
+      <h2>实体详情</h2>
+      <div class="empty">点击正文中的高亮片段，可以查看类型、跨度、置信度和链接信息。</div>
+    </aside>
+  </main>
+</div>
+
+<script>
+const TYPES = {
+  PER: { label: "人名", color: "#b83a2f" },
+  LOC: { label: "地名/番国", color: "#24765f" },
+  OFF: { label: "官职", color: "#9b691f" },
+};
+
+let DATA = null;
+const hidden = new Set();
+let query = "";
+
+const esc = value => String(value ?? "").replace(/[&<>"]/g, char => ({
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  "\"": "&quot;",
+}[char]));
+
+function countByType(entities) {
+  return entities.reduce((acc, entity) => {
+    acc[entity.type] = (acc[entity.type] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function init(data) {
+  DATA = data;
+  DATA.entities.forEach((entity, index) => entity._i = index);
+  document.getElementById("title").textContent = data.title || "明实录实体抽取结果";
+  document.getElementById("source").textContent = data.source || "";
+  renderStats();
+  renderLegend();
+  renderText();
+}
+
+function renderStats() {
+  const counts = countByType(DATA.entities);
+  const stats = document.getElementById("stats");
+  const total = DATA.entities.length;
+  stats.innerHTML = `<div class="stat"><b>${total}</b><span>全部实体</span></div>` +
+    Object.entries(TYPES).map(([type, info]) =>
+      `<div class="stat"><b>${counts[type] || 0}</b><span>${info.label}</span></div>`
+    ).join("");
+}
+
+function renderLegend() {
+  const legend = document.getElementById("legend");
+  legend.innerHTML = "";
+  for (const [type, info] of Object.entries(TYPES)) {
+    const button = document.createElement("button");
+    button.className = hidden.has(type) ? "off" : "";
+    button.innerHTML = `<span class="dot" style="background:${info.color}"></span>${info.label}`;
+    button.onclick = () => {
+      hidden.has(type) ? hidden.delete(type) : hidden.add(type);
+      renderLegend();
+      renderText();
+    };
+    legend.appendChild(button);
+  }
+}
+
+function highlightQuery(text) {
+  if (!query) return esc(text);
+  const lower = text.toLowerCase();
+  const needle = query.toLowerCase();
+  let html = "";
+  let index = 0;
+  while (true) {
+    const found = lower.indexOf(needle, index);
+    if (found === -1) {
+      html += esc(text.slice(index));
+      break;
+    }
+    html += esc(text.slice(index, found));
+    html += `<mark>${esc(text.slice(found, found + query.length))}</mark>`;
+    index = found + query.length;
+  }
+  return html;
+}
+
+function renderText() {
+  const text = DATA.text || "";
+  const entities = [...DATA.entities].sort((a, b) => a.start - b.start || b.end - a.end);
+  let html = "";
+  let cursor = 0;
+  for (const entity of entities) {
+    if (entity.start < cursor) continue;
+    if (entity.start > cursor) {
+      html += highlightQuery(text.slice(cursor, entity.start));
+    }
+    const visibleText = text.slice(entity.start, entity.end);
+    const classes = ["ent", entity.type];
+    if (!entity.linked || !entity.linked.id) classes.push("unlinked");
+    if (hidden.has(entity.type)) classes.push("hidden");
+    html += `<span class="${classes.join(" ")}" data-i="${entity._i}">${highlightQuery(visibleText)}</span>`;
+    cursor = entity.end;
+  }
+  html += highlightQuery(text.slice(cursor));
+
+  const passage = document.getElementById("passage");
+  passage.innerHTML = html;
+  passage.querySelectorAll(".ent:not(.hidden)").forEach(span => {
+    span.onclick = () => showPanel(Number(span.dataset.i), span);
+  });
+}
+
+function showPanel(index, span) {
+  const entity = DATA.entities[index];
+  const info = TYPES[entity.type] || { label: entity.type, color: "#555" };
+  document.querySelectorAll(".ent.active").forEach(item => item.classList.remove("active"));
+  span.classList.add("active");
+
+  let linked = `<div class="kv"><b>链接：</b>暂无规范库匹配</div>`;
+  if (entity.linked) {
+    const id = entity.linked.id ? `，ID ${esc(entity.linked.id)}` : "";
+    const name = entity.linked.name || entity.text;
+    const url = entity.linked.url ? ` <a href="${esc(entity.linked.url)}" target="_blank" rel="noopener">打开来源</a>` : "";
+    const status = entity.linked.status ? `（${esc(entity.linked.status)}）` : "";
+    linked = `<div class="kv"><b>链接：</b>${esc(entity.linked.source || "local")}：${esc(name)}${id}${status}${url}</div>`;
+  }
+
+  const panel = document.getElementById("panel");
+  panel.innerHTML = `
+    <span class="tag" style="background:${info.color}">${esc(info.label)}</span>
+    <h2>${esc(entity.text)}</h2>
+    <div class="kv"><b>跨度：</b>[${entity.start}, ${entity.end})</div>
+    <div class="kv"><b>置信度：</b>${Number(entity.score ?? 0).toFixed(2)}</div>
+    <div class="kv"><b>方法：</b>${esc(entity.method || "")}</div>
+    <div class="kv"><b>文献：</b>${esc(entity.doc_id || "")}</div>
+    ${linked}
+  `;
+}
+
+document.getElementById("search").addEventListener("input", event => {
+  query = event.target.value.trim();
+  renderText();
+});
+
+fetch("../entities.json")
+  .then(response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  })
+  .then(init)
+  .catch(error => {
+    document.getElementById("source").textContent = "Could not load entities.json";
+    document.getElementById("passage").innerHTML = `
+      <div class="error">
+        <b>无法加载 entities.json。</b><br>
+        请先运行 <code>python -m ming_ner build --input-dir data --output-dir outputs\\demo</code>，
+        然后通过本地 HTTP 服务打开本页面。<br>
+        ${esc(error.message)}
+      </div>`;
+  });
+</script>
+</body>
+</html>

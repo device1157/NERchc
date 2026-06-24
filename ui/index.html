@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>明实录弱标签校订台</title>
+<style>
+  :root {
+    --paper: #f3ead8;
+    --card: rgba(255, 250, 239, .92);
+    --ink: #252018;
+    --muted: #796d5c;
+    --line: rgba(72, 49, 20, .18);
+    --per: #b83a2f;
+    --per-bg: #ffe4dc;
+    --loc: #24765f;
+    --loc-bg: #ddf2e8;
+    --off: #9b691f;
+    --off-bg: #faebca;
+    --weak: #5f5b52;
+    --shadow: 0 20px 60px rgba(61, 42, 16, .15);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 8% 8%, rgba(184, 58, 47, .16), transparent 28rem),
+      radial-gradient(circle at 90% 12%, rgba(36, 118, 95, .15), transparent 24rem),
+      linear-gradient(135deg, #eadcc1, var(--paper));
+    font-family: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", serif;
+  }
+
+  .shell { width: min(1380px, calc(100% - 28px)); margin: 0 auto; padding: 26px 0 38px; }
+  h1 { margin: 0 0 4px; font-size: clamp(28px, 4vw, 48px); letter-spacing: .04em; }
+  .sub { color: var(--muted); font-size: 14px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 310px minmax(0, 1fr) 360px;
+    gap: 16px;
+    align-items: start;
+    margin-top: 18px;
+  }
+
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 24px;
+    background: var(--card);
+    box-shadow: var(--shadow);
+  }
+
+  .controls, .side { position: sticky; top: 14px; padding: 16px; }
+  .reader { min-height: 72vh; padding: clamp(18px, 3vw, 34px); }
+
+  label { display: block; margin: 12px 0 5px; color: var(--muted); font-size: 13px; }
+  select, input, button, textarea {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 9px 11px;
+    color: var(--ink);
+    background: #fffdf7;
+    font: inherit;
+  }
+
+  input[type="number"] { font-variant-numeric: tabular-nums; }
+
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+
+  button {
+    cursor: pointer;
+    transition: transform .16s ease, filter .16s ease;
+  }
+  button:hover { transform: translateY(-1px); filter: brightness(.98); }
+  button.primary { margin-top: 14px; background: #2f654f; color: #fff; }
+  button.warn { background: #fff4e0; }
+  button.danger { background: #fff0ed; }
+  button.inline { width: auto; padding: 5px 9px; border-radius: 999px; font-size: 13px; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    border-radius: 999px;
+    padding: 7px 11px;
+    background: #fff8e8;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .badge.passed { background: #dff2e8; color: #1e604d; }
+  .badge.below_target { background: #ffe4dc; color: #912f28; }
+
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .stat { border: 1px solid var(--line); border-radius: 16px; padding: 9px; background: rgba(255,255,255,.44); }
+  .stat b { display: block; font-size: 22px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+
+  .passage {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    line-height: 2.15;
+    font-size: clamp(18px, 2vw, 23px);
+  }
+
+  .ent {
+    border-radius: 7px;
+    padding: 1px 3px;
+    cursor: pointer;
+  }
+  .ent.PER { background: var(--per-bg); box-shadow: inset 0 -3px var(--per); }
+  .ent.LOC { background: var(--loc-bg); box-shadow: inset 0 -3px var(--loc); }
+  .ent.OFF { background: var(--off-bg); box-shadow: inset 0 -3px var(--off); }
+  .ent.weak_label {
+    outline: 1px dashed var(--weak);
+    outline-offset: 2px;
+    opacity: .72;
+  }
+  .ent.rejected { text-decoration: line-through; opacity: .35; }
+  .ent.active { outline: 2px solid currentColor; filter: brightness(.94); }
+
+  .pill {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 8px;
+    color: #fff;
+    font-size: 12px;
+  }
+  .pill.PER { background: var(--per); }
+  .pill.LOC { background: var(--loc); }
+  .pill.OFF { background: var(--off); }
+
+  .list { max-height: 280px; overflow: auto; display: grid; gap: 7px; margin-top: 8px; }
+  .item {
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    padding: 8px;
+    background: rgba(255,255,255,.48);
+    cursor: pointer;
+  }
+  .item.active { border-color: rgba(36, 118, 95, .65); background: #eff8f2; }
+  .item small { color: var(--muted); display: block; margin-top: 3px; }
+
+  .edit-box { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .msg { margin-top: 10px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .error { color: #912f28; }
+  .ok { color: #1e604d; }
+
+  @media (max-width: 1100px) {
+    .grid { grid-template-columns: 1fr; }
+    .controls, .side { position: static; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <h1>明实录弱标签校订台</h1>
+  <div class="sub">选择 data 文件与条目范围，分析实体，修正 weak_label，并保存为训练数据。</div>
+
+  <div class="grid">
+    <section class="card controls">
+      <label>数据文件</label>
+      <select id="fileSelect"></select>
+
+      <div class="row">
+        <div>
+          <label>起始条目</label>
+          <input id="startEntry" type="number" min="1" value="1">
+        </div>
+        <div>
+          <label>结束条目</label>
+          <input id="endEntry" type="number" min="1" value="20">
+        </div>
+      </div>
+
+      <label>弱标签阈值</label>
+      <input id="weakThreshold" type="number" min="0" max="1" step="0.01" value="0.80">
+
+      <label>模型目录（可选）</label>
+      <input id="modelDir" placeholder="models/ming-ner-bert">
+
+      <button class="primary" id="analyzeBtn">分析所选文本</button>
+      <button id="saveBtn">保存校订结果</button>
+
+      <div class="badge" id="accuracyBadge">Loading metrics...</div>
+      <div class="stats" id="stats"></div>
+      <div class="msg" id="controlMsg"></div>
+
+      <label>条目预览</label>
+      <div class="list" id="entryList"></div>
+    </section>
+
+    <main class="card reader">
+      <div class="passage" id="passage">请选择文件并点击“分析所选文本”。</div>
+    </main>
+
+    <aside class="card side">
+      <h2 style="margin:0 0 8px">标签校订</h2>
+      <div class="msg">点击高亮标签，或拖选正文后点击“新增标签”。编辑后保存会写入 reviewed.jsonl。</div>
+
+      <div class="edit-box">
+        <div class="row3">
+          <button class="inline" id="addPer">新增 PER</button>
+          <button class="inline" id="addLoc">新增 LOC</button>
+          <button class="inline" id="addOff">新增 OFF</button>
+        </div>
+      </div>
+
+      <div class="edit-box" id="editor">
+        <div class="msg">尚未选择标签。</div>
+      </div>
+
+      <div class="edit-box">
+        <h3>Weak Labels</h3>
+        <div class="list" id="weakList"></div>
+      </div>
+
+      <div class="edit-box">
+        <h3>全部标签</h3>
+        <div class="list" id="entityList"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+const TYPES = {
+  PER: { label: "人名", color: "#b83a2f" },
+  LOC: { label: "地名/番国", color: "#24765f" },
+  OFF: { label: "官职", color: "#9b691f" },
+};
+
+let DATA = null;
+let ENTRIES = [];
+let selectedIndex = null;
+
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+function setMsg(text, cls = "") {
+  $("controlMsg").className = `msg ${cls}`;
+  $("controlMsg").textContent = text;
+}
+
+async function init() {
+  const settings = await api("/api/settings");
+  $("weakThreshold").value = Number(settings.weak_threshold ?? 0.8).toFixed(2);
+  const files = await api("/api/data-files");
+  $("fileSelect").innerHTML = files.files.map(file =>
+    `<option value="${esc(file.doc_id)}" data-name="${esc(file.name)}">${esc(file.name)} (${Math.round(file.size / 1024)} KB)</option>`
+  ).join("");
+  await loadEntries();
+  await loadMetrics();
+}
+
+async function loadEntries() {
+  const file = $("fileSelect").value;
+  if (!file) return;
+  const data = await api(`/api/entries?file=${encodeURIComponent(file)}`);
+  ENTRIES = data.entries;
+  $("endEntry").max = ENTRIES.length;
+  $("startEntry").max = ENTRIES.length;
+  if (Number($("endEntry").value) > ENTRIES.length) $("endEntry").value = Math.min(20, ENTRIES.length);
+  renderEntries();
+}
+
+function renderEntries() {
+  const start = Number($("startEntry").value);
+  const end = Number($("endEntry").value);
+  $("entryList").innerHTML = ENTRIES.slice(0, 80).map(entry => {
+    const active = entry.entry_id >= start && entry.entry_id <= end ? "active" : "";
+    return `<div class="item ${active}" onclick="setRange(${entry.entry_id})">
+      <b>#${entry.entry_id}</b>
+      <small>${esc(entry.preview)}</small>
+    </div>`;
+  }).join("");
+}
+
+window.setRange = id => {
+  $("startEntry").value = id;
+  $("endEntry").value = Math.min(id + 19, ENTRIES.length);
+  renderEntries();
+};
+
+async function analyze() {
+  setMsg("分析中...");
+  selectedIndex = null;
+  const payload = {
+    file: $("fileSelect").value,
+    start_entry: Number($("startEntry").value),
+    end_entry: Number($("endEntry").value),
+    model_dir: $("modelDir").value.trim() || null,
+    weak_threshold: Number($("weakThreshold").value),
+  };
+  DATA = await api("/api/analyze", { method: "POST", body: JSON.stringify(payload) });
+  DATA.entities = DATA.entities.map((entity, index) => ({ ...entity, _i: index, status: entity.status || statusFor(entity) }));
+  renderAll();
+  setMsg(`已分析 ${DATA.source}，实体 ${DATA.entities.length} 个。`, "ok");
+}
+
+function statusFor(entity) {
+  return Number(entity.score ?? 0) < Number($("weakThreshold").value) ? "weak_label" : "strong_label";
+}
+
+function renderAll() {
+  renderText();
+  renderStats();
+  renderLists();
+  renderEditor();
+}
+
+function renderStats() {
+  if (!DATA) { $("stats").innerHTML = ""; return; }
+  const counts = DATA.entities.filter(e => e.status !== "rejected").reduce((acc, e) => {
+    acc[e.type] = (acc[e.type] || 0) + 1;
+    return acc;
+  }, {});
+  $("stats").innerHTML = Object.entries(TYPES).map(([type, info]) =>
+    `<div class="stat"><b>${counts[type] || 0}</b><span>${info.label}</span></div>`
+  ).join("");
+}
+
+function renderText() {
+  if (!DATA) return;
+  const text = DATA.text || "";
+  const entities = DATA.entities
+    .map((entity, index) => ({ ...entity, _i: index }))
+    .filter(entity => entity.status !== "rejected")
+    .sort((a, b) => a.start - b.start || b.end - a.end);
+  let html = "";
+  let cursor = 0;
+  for (const entity of entities) {
+    if (entity.start < cursor) continue;
+    html += esc(text.slice(cursor, entity.start));
+    const cls = ["ent", entity.type, entity.status, entity._i === selectedIndex ? "active" : ""].join(" ");
+    html += `<span class="${cls}" data-i="${entity._i}" onclick="selectEntity(${entity._i})">${esc(text.slice(entity.start, entity.end))}</span>`;
+    cursor = entity.end;
+  }
+  html += esc(text.slice(cursor));
+  $("passage").innerHTML = html || "No text.";
+}
+
+function renderLists() {
+  if (!DATA) return;
+  const activeEntities = DATA.entities.map((e, i) => ({ ...e, _i: i })).filter(e => e.status !== "rejected");
+  const weak = activeEntities.filter(e => e.status === "weak_label");
+  $("weakList").innerHTML = weak.length ? weak.map(itemHtml).join("") : `<div class="msg">没有 weak_label。</div>`;
+  $("entityList").innerHTML = activeEntities.length ? activeEntities.map(itemHtml).join("") : `<div class="msg">没有标签。</div>`;
+}
+
+function itemHtml(entity) {
+  return `<div class="item ${entity._i === selectedIndex ? "active" : ""}" onclick="selectEntity(${entity._i})">
+    <span class="pill ${entity.type}">${entity.type}</span>
+    <b>${esc(entity.text)}</b>
+    <small>[${entity.start}, ${entity.end}) score ${Number(entity.score ?? 0).toFixed(2)} ${esc(entity.status)}</small>
+  </div>`;
+}
+
+window.selectEntity = index => {
+  selectedIndex = index;
+  renderAll();
+};
+
+function renderEditor() {
+  if (!DATA || selectedIndex == null || !DATA.entities[selectedIndex]) {
+    $("editor").innerHTML = `<div class="msg">尚未选择标签。</div>`;
+    return;
+  }
+  const e = DATA.entities[selectedIndex];
+  $("editor").innerHTML = `
+    <label>类型</label>
+    <select id="editType">${Object.keys(TYPES).map(type => `<option ${type === e.type ? "selected" : ""}>${type}</option>`).join("")}</select>
+    <div class="row">
+      <div><label>Start</label><input id="editStart" type="number" min="0" max="${DATA.text.length}" value="${e.start}"></div>
+      <div><label>End</label><input id="editEnd" type="number" min="0" max="${DATA.text.length}" value="${e.end}"></div>
+    </div>
+    <div class="msg">当前文本：<b>${esc(DATA.text.slice(e.start, e.end))}</b></div>
+    <div class="row">
+      <button class="warn" onclick="applyEdit()">应用修改</button>
+      <button onclick="acceptEntity()">接受为 gold</button>
+    </div>
+    <button class="danger" onclick="rejectEntity()">删除/拒绝标签</button>
+  `;
+}
+
+window.applyEdit = () => {
+  const start = Number($("editStart").value);
+  const end = Number($("editEnd").value);
+  if (!validSpan(start, end, selectedIndex)) return;
+  const e = DATA.entities[selectedIndex];
+  e.start = start;
+  e.end = end;
+  e.type = $("editType").value;
+  e.text = DATA.text.slice(start, end);
+  e.status = "gold";
+  e.score = 1;
+  e.method = "human-edit";
+  renderAll();
+};
+
+window.acceptEntity = () => {
+  if (selectedIndex == null) return;
+  DATA.entities[selectedIndex].status = "gold";
+  DATA.entities[selectedIndex].score = Math.max(1, DATA.entities[selectedIndex].score || 0);
+  renderAll();
+};
+
+window.rejectEntity = () => {
+  if (selectedIndex == null) return;
+  DATA.entities[selectedIndex].status = "rejected";
+  selectedIndex = null;
+  renderAll();
+};
+
+function addEntity(type) {
+  if (!DATA) return setMsg("请先分析文本。", "error");
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !selection.toString()) {
+    return setMsg("请先在正文中拖选一段文字。", "error");
+  }
+  const chosen = selection.toString();
+  const start = DATA.text.indexOf(chosen);
+  if (start < 0) return setMsg("无法定位所选文字，请尝试选择更短片段。", "error");
+  const end = start + chosen.length;
+  if (!validSpan(start, end, null)) return;
+  DATA.entities.push({
+    start, end, type, text: chosen, score: 1, source: "human", method: "human-add", linked: null, status: "gold"
+  });
+  selectedIndex = DATA.entities.length - 1;
+  renderAll();
+}
+
+function validSpan(start, end, ignoreIndex) {
+  if (start < 0 || end <= start || end > DATA.text.length) {
+    setMsg("非法跨度。", "error");
+    return false;
+  }
+  const overlap = DATA.entities.some((entity, index) =>
+    index !== ignoreIndex && entity.status !== "rejected" && start < entity.end && end > entity.start
+  );
+  if (overlap) {
+    setMsg("标签跨度不能重叠。", "error");
+    return false;
+  }
+  return true;
+}
+
+async function saveAnnotations() {
+  if (!DATA) return setMsg("没有可保存的分析结果。", "error");
+  const entities = DATA.entities
+    .filter(e => e.status !== "rejected")
+    .map(e => ({ start: e.start, end: e.end, type: e.type, text: DATA.text.slice(e.start, e.end), status: "gold" }));
+  const payload = {
+    id: DATA.id,
+    selection: DATA.selection,
+    text: DATA.text,
+    entities,
+    weak_threshold: Number($("weakThreshold").value),
+  };
+  const saved = await api("/api/annotations", { method: "POST", body: JSON.stringify(payload) });
+  setMsg(`已保存 ${saved.saved.entities.length} 个 gold 标签。`, "ok");
+  renderMetrics(saved.metrics);
+}
+
+async function loadMetrics() {
+  const metrics = await api("/api/metrics");
+  renderMetrics(metrics);
+}
+
+function renderMetrics(metrics) {
+  const badge = $("accuracyBadge");
+  badge.className = `badge ${metrics.status}`;
+  const label = {
+    not_enough_reviewed_data: "Not enough reviewed data",
+    below_target: "Below target",
+    passed: "Passed",
+  }[metrics.status] || metrics.status;
+  badge.textContent = `${label}: ${metrics.reviewed_segments}/${metrics.min_reviewed_segments} reviewed`;
+}
+
+$("fileSelect").addEventListener("change", loadEntries);
+$("startEntry").addEventListener("input", renderEntries);
+$("endEntry").addEventListener("input", renderEntries);
+$("analyzeBtn").addEventListener("click", () => analyze().catch(err => setMsg(err.message, "error")));
+$("saveBtn").addEventListener("click", () => saveAnnotations().catch(err => setMsg(err.message, "error")));
+$("addPer").addEventListener("click", () => addEntity("PER"));
+$("addLoc").addEventListener("click", () => addEntity("LOC"));
+$("addOff").addEventListener("click", () => addEntity("OFF"));
+$("weakThreshold").addEventListener("change", async () => {
+  await api("/api/settings", { method: "POST", body: JSON.stringify({ weak_threshold: Number($("weakThreshold").value) }) });
+  if (DATA) {
+    DATA.entities.forEach(e => { if (e.status !== "gold" && e.status !== "rejected") e.status = Number(e.score ?? 0) < Number($("weakThreshold").value) ? "weak_label" : "strong_label"; });
+    renderAll();
+  }
+});
+
+init().catch(err => setMsg(err.message, "error"));
+</script>
+</body>
+</html>
