@@ -1,0 +1,22 @@
+app:
+  host: 127.0.0.1
+  port: 8765
+  open_browser: true
+paths:
+  data_dir: data
+  db_path: data/app.db
+  secrets_path: config/secrets.json
+llm:
+  base_url: https://api.openai.com/v1
+  model_name: gpt-4o
+  temperature: 0
+  max_tokens: 800
+  timeout_seconds: 60
+  concurrency: 2
+  rps: 1
+preprocess:
+  convert_s2t: true
+  min_sentence_len: 50
+  max_sentence_len: 200
+  sample_size: 600
+

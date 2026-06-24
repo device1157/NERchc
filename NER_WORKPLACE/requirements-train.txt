@@ -1,0 +1,8 @@
+-r requirements.txt
+
+transformers>=4.44
+torch>=2.3
+datasets>=2.20
+evaluate>=0.4
+seqeval>=1.2
+pytorch-crf>=0.7

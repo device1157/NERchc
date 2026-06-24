@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+config/secrets.json
+data/app.db
+data/corpus/raw/*
+data/annotations/*
+data/datasets/*
+data/models/*
+!data/corpus/raw/.gitkeep
+!data/annotations/.gitkeep
+!data/datasets/.gitkeep
+!data/models/.gitkeep
+
