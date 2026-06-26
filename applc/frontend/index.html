@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>明實錄事件抽取平台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="seal">史</span>
+          <div>
+            <h1>明實錄事件平台</h1>
+            <p>時間 · 實體 · 聚類 · 分類 · 視覺化</p>
+          </div>
+        </div>
+        <nav id="nav"></nav>
+      </aside>
+      <main class="main">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Thesis-style pipeline</p>
+            <h2>從原始史料到可檢索事件圖景</h2>
+          </div>
+          <button id="refreshStats" class="ghost">刷新統計</button>
+        </section>
+        <section id="stats" class="stats"></section>
+        <section id="view" class="panel"></section>
+      </main>
+    </div>
+    <template id="toastTemplate"><div class="toast"></div></template>
+    <div id="toasts"></div>
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>

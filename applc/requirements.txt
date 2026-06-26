@@ -1,0 +1,13 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7
+opencc-python-reimplemented>=0.1.7
+httpx2>=0.1
+pytest>=8.2
+
+# Optional research-grade extensions for later replacement of the MVP fallbacks:
+# scikit-learn>=1.5
+# numpy>=1.26
+# gensim>=4.3
+# python-crfsuite>=0.9.10
