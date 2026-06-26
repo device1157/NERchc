@@ -11,3 +11,7 @@ pytest>=8.2
 # numpy>=1.26
 # gensim>=4.3
 # python-crfsuite>=0.9.10
+# sentence-transformers>=3.0
+# huggingface-hub>=0.24
+# transformers>=4.44
+# lunardate>=0.2

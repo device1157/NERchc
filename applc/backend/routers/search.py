@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from backend.db import db, rows_to_dicts
+from backend.services.entity_display import entity_display_text
 
 router = APIRouter()
 
@@ -35,7 +36,10 @@ def search_entities(q: str | None = None, type: str | None = None, limit: int = 
             """,
             [*params, limit],
         ).fetchall()
-    return {"items": rows_to_dicts(rows)}
+    items = rows_to_dicts(rows)
+    for item in items:
+        item["display_text"] = entity_display_text(item.get("text"), item.get("entity_type"))
+    return {"items": items}
 
 
 @router.get("/events")

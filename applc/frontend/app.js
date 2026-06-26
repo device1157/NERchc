@@ -15,6 +15,7 @@ const state = {
   timelineFilters: {},
   timelineFocusId: "",
   aiResults: {},
+  modelStatus: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -223,8 +224,37 @@ function renderResources(view) {
   $("#addTerm").addEventListener("click", guarded(addTerm));
   $("#reloadTerms").addEventListener("click", guarded(loadTerms));
   $("#resourceFilter").addEventListener("change", guarded(loadTerms));
+  attachResourceImportPanel(view);
   guarded(loadTermTypes)();
   guarded(loadTerms)();
+}
+
+function attachResourceImportPanel(view) {
+  view.querySelector(".grid")?.insertAdjacentHTML("beforeend", `
+    <div class="card">
+      <h3>Bulk Dictionary Import</h3>
+      <p class="muted">Upload CSV or JSON terms from CBDB, CHGIS, or curated research dictionaries. Required columns: type, text. Optional: canonical_id, aliases, event_type, metadata.</p>
+      <input id="resourceImportFile" type="file" accept=".csv,.json,.txt" />
+      <label class="inline"><input id="skipImportDuplicates" type="checkbox" checked /> Skip duplicate terms</label>
+      <div class="toolbar">
+        <button id="importTerms">Import terms</button>
+      </div>
+      <div id="importTermsResult" class="result subtle">No import run yet.</div>
+    </div>`);
+  $("#importTerms")?.addEventListener("click", guarded(importTerms));
+}
+
+async function importTerms() {
+  const file = $("#resourceImportFile").files[0];
+  if (!file) return toast("Choose a CSV or JSON file first.");
+  const form = new FormData();
+  form.append("file", file);
+  const skip = $("#skipImportDuplicates").checked;
+  const result = await api(`/api/resources/import?skip_duplicates=${skip}`, { method: "POST", body: form });
+  $("#importTermsResult").textContent = `Imported ${result.imported}, skipped ${result.skipped}${result.errors?.length ? `, errors: ${result.errors.join("; ")}` : ""}`;
+  await loadTermTypes();
+  await loadTerms();
+  await loadStats();
 }
 
 async function loadTermTypes() {
@@ -279,7 +309,54 @@ function renderPipeline(view) {
   document.querySelectorAll("[data-step]").forEach((button) => button.addEventListener("click", guarded(() => runStep(button.dataset.step))));
   $("#runAll").addEventListener("click", guarded(runAll));
   $("#loadRuns").addEventListener("click", guarded(loadRuns));
+  attachModelPanel(view);
   guarded(loadRuns)();
+  guarded(loadModelStatus)();
+}
+
+function attachModelPanel(view) {
+  view.insertAdjacentHTML("beforeend", `
+    <div class="card">
+      <h3>Research Models & Data</h3>
+      <p class="muted">Models and datasets stay under data/models or data/imports. The pipeline keeps safe offline fallbacks when artifacts are missing.</p>
+      <div class="toolbar">
+        <button id="refreshModels" class="secondary">Refresh status</button>
+      </div>
+      <div id="modelStatus" class="results"></div>
+    </div>`);
+  $("#refreshModels")?.addEventListener("click", guarded(loadModelStatus));
+}
+
+async function loadModelStatus() {
+  const result = await api("/api/models/status");
+  state.modelStatus = result.items || [];
+  const node = $("#modelStatus");
+  if (!node) return;
+  node.innerHTML = state.modelStatus.map(renderModelStatusItem).join("") || `<p class="muted">No artifacts configured.</p>`;
+  document.querySelectorAll("[data-fetch-artifact]").forEach((button) => {
+    button.addEventListener("click", guarded(() => fetchArtifact(button.dataset.fetchArtifact)));
+  });
+}
+
+function renderModelStatusItem(item) {
+  return `<article class="result">
+    <strong>${escapeHtml(item.artifact_id)}</strong> <span class="muted">${escapeHtml(item.kind)} / ${escapeHtml(item.status)}</span>
+    <p>${escapeHtml(item.license_note || "")}</p>
+    <p class="muted">${escapeHtml(item.local_path || "")}</p>
+    <div class="toolbar">
+      <button data-fetch-artifact="${escapeHtml(item.artifact_id)}">Fetch / prepare</button>
+      <a href="${escapeHtml(item.source_url)}" target="_blank" rel="noreferrer"><button class="secondary">Source</button></a>
+    </div>
+  </article>`;
+}
+
+async function fetchArtifact(artifactId) {
+  const result = await api("/api/models/fetch", {
+    method: "POST",
+    body: JSON.stringify({ artifact_id: artifactId, force: false }),
+  });
+  toast(`${artifactId}: ${result.status}`);
+  await loadModelStatus();
 }
 
 async function runStep(step) {
@@ -575,5 +652,899 @@ function renderExports(view) {
 }
 
 $("#refreshStats").addEventListener("click", guarded(loadStats));
+render();
+guarded(loadStats)();
+
+attachResourceImportPanel = function attachResourceImportAndCbdbPanelFinal(view) {
+  view.querySelector(".grid")?.insertAdjacentHTML("beforeend", `
+    <div class="card">
+      <h3>Bulk Dictionary Import</h3>
+      <p class="muted">Upload CSV or JSON terms. Required columns: type, text. Optional: canonical_id, aliases, event_type, metadata.</p>
+      <input id="resourceImportFile" type="file" accept=".csv,.json,.txt" />
+      <label class="inline"><input id="skipImportDuplicates" type="checkbox" checked /> Skip duplicate terms</label>
+      <div class="toolbar"><button id="importTerms">Import terms</button></div>
+      <div id="importTermsResult" class="result subtle">No import run yet.</div>
+    </div>
+    <div class="card">
+      <h3>CBDB 人名更新</h3>
+      <p class="muted">輸入人名或使用目前已抽取的人名，從 CBDB API 更新 person_name 知識資源。</p>
+      <textarea id="cbdbNames" placeholder="每行一個人名，例如：夏原吉"></textarea>
+      <label class="inline"><input id="cbdbUseExtracted" type="checkbox" checked /> 包含目前已抽取的人名</label>
+      <label class="inline"><input id="cbdbUseTerms" type="checkbox" /> 包含既有 person_name 知識詞</label>
+      <div class="toolbar"><button id="updateCbdb">更新 CBDB 人名</button></div>
+      <div id="cbdbResult" class="result subtle">尚未更新。</div>
+    </div>`);
+  $("#importTerms")?.addEventListener("click", guarded(importTerms));
+  $("#updateCbdb")?.addEventListener("click", guarded(updateCbdbPeople));
+};
+
+renderTimelineItem = function renderTimelineItemWithAiChatFinal(item) {
+  const timelineId = item.timeline_id || `D${item.document_id}`;
+  const entities = item.entities?.length ? item.entities : parseEntityRefs(item.entity_refs).map((entity) => ({
+    ...entity,
+    entity_type_label: entityLabel(entity.entity_type),
+    color: entityColor(entity.entity_type),
+    display_text: entity.entity_type === "PER" ? `人名|"${entity.text}"` : entity.text,
+  }));
+  const annotations = item.annotations || [];
+  const savedAnalyses = item.ai_analysis_results || [];
+  const chatMessages = item.ai_chat_messages || [];
+  const targetOptions = [
+    `<option value="event" data-kind="event" data-value="${escapeHtml(item.event_type)}">事件：${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</option>`,
+    ...entities.map((entity) => `<option value="entity:${escapeHtml(entity.id)}" data-kind="entity" data-value="${escapeHtml(entity.text)}" data-entity-id="${escapeHtml(entity.id)}">實體：${escapeHtml(displayEntityText(entity))}</option>`),
+  ];
+  const analysisKey = `${timelineId}:event:${item.event_type}`;
+  const cached = state.aiResults[analysisKey];
+  return `
+    <article class="timeline-item ${state.timelineFocusId === timelineId ? "focused" : ""}" id="timeline-${escapeHtml(timelineId)}">
+      <div class="timeline-head">
+        <span class="node-id">${escapeHtml(timelineId)}</span>
+        <strong>${escapeHtml(item.ce_year || "未知年份")} ｜ ${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</strong>
+        <span class="entity-chip">${escapeHtml(item.event_type)}</span>
+      </div>
+      <p>${highlightText(item.raw_text || "", state.timelineFilters.q || "")}</p>
+      <p class="muted">日期：${escapeHtml(item.historical_dates || "未抽取")} ｜ 機率：${escapeHtml(item.probability)} ｜ 引文：${escapeHtml(item.citation || "")}</p>
+      ${entities.length ? `<div class="chip-row">${entities.map(renderTimelineEntityChip).join("")}</div>` : ""}
+      <div class="ai-toolbar">
+        <select class="ai-target" data-timeline-id="${escapeHtml(timelineId)}">${targetOptions.join("")}</select>
+        <button data-analyze="${escapeHtml(timelineId)}">AI 分析</button>
+        <button class="secondary" data-export-md="${escapeHtml(timelineId)}">保存為 Markdown</button>
+      </div>
+      <div class="research-panel">
+        ${annotations.length ? `<div class="chip-row">${annotations.map(renderAnnotationChip).join("")}</div>` : ""}
+        <div class="correction-grid">
+          <div>
+            <label>修正事件類型</label>
+            <input class="event-correction" data-document-id="${escapeHtml(item.document_id)}" value="${escapeHtml(item.event_type_label || eventLabel(item.event_type))}" />
+          </div>
+          <button data-add-event="${escapeHtml(item.document_id)}">儲存事件修正</button>
+          <div>
+            <label>補充漏掉的實體</label>
+            <input class="entity-correction" data-document-id="${escapeHtml(item.document_id)}" placeholder="文字|類別，例如 夏原吉|人名 或 南京|LOC" />
+          </div>
+          <button data-add-entity="${escapeHtml(item.document_id)}">儲存實體</button>
+        </div>
+        ${savedAnalyses.length ? `<div class="saved-ai">${savedAnalyses.map(renderSavedAnalysis).join("")}</div>` : ""}
+        <div class="ai-chat-panel">
+          <label>追問 AI</label>
+          <textarea class="ai-chat-input" data-timeline-id="${escapeHtml(timelineId)}" placeholder="針對此節點繼續提問..."></textarea>
+          <div class="toolbar"><button data-ai-chat="${escapeHtml(timelineId)}">送出追問</button></div>
+          <div class="ai-chat-history" id="chat-${escapeHtml(timelineId)}">${renderChatMessages(chatMessages)}</div>
+        </div>
+      </div>
+      <div class="ai-result" id="analysis-${escapeHtml(timelineId)}">${cached ? nl2br(cached) : "尚未產生本節點的 AI 分析。"}</div>
+    </article>`;
+};
+
+bindTimelineActions = function bindTimelineActionsWithAiChatFinal() {
+  document.querySelectorAll("[data-analyze]").forEach((button) => {
+    button.addEventListener("click", guarded(() => analyzeTimelineNode(button)));
+  });
+  document.querySelectorAll("[data-add-event]").forEach((button) => {
+    button.addEventListener("click", guarded(() => saveEventCorrection(button.dataset.addEvent)));
+  });
+  document.querySelectorAll("[data-add-entity]").forEach((button) => {
+    button.addEventListener("click", guarded(() => saveEntityCorrection(button.dataset.addEntity)));
+  });
+  document.querySelectorAll("[data-ai-chat]").forEach((button) => {
+    button.addEventListener("click", guarded(() => sendAiChat(button.dataset.aiChat)));
+  });
+  document.querySelectorAll("[data-export-md]").forEach((button) => {
+    button.addEventListener("click", guarded(() => exportAiMarkdown(button.dataset.exportMd)));
+  });
+};
+
+render();
+guarded(loadStats)();
+
+const baseAttachResourceImportPanelForCbdb = attachResourceImportPanel;
+attachResourceImportPanel = function attachResourceImportAndCbdbPanel(view) {
+  baseAttachResourceImportPanelForCbdb(view);
+  view.querySelector(".grid")?.insertAdjacentHTML("beforeend", `
+    <div class="card">
+      <h3>CBDB 人名更新</h3>
+      <p class="muted">輸入人名或使用目前已抽取的人名，從 CBDB API 更新 person_name 知識資源。</p>
+      <textarea id="cbdbNames" placeholder="每行一個人名，例如：夏原吉"></textarea>
+      <label class="inline"><input id="cbdbUseExtracted" type="checkbox" checked /> 包含目前已抽取的人名</label>
+      <label class="inline"><input id="cbdbUseTerms" type="checkbox" /> 包含既有 person_name 知識詞</label>
+      <div class="toolbar">
+        <button id="updateCbdb">更新 CBDB 人名</button>
+      </div>
+      <div id="cbdbResult" class="result subtle">尚未更新。</div>
+    </div>`);
+  $("#updateCbdb")?.addEventListener("click", guarded(updateCbdbPeople));
+};
+
+async function updateCbdbPeople() {
+  const names = ($("#cbdbNames")?.value || "")
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const result = await api("/api/resources/cbdb/update", {
+    method: "POST",
+    body: JSON.stringify({
+      names,
+      include_extracted: $("#cbdbUseExtracted")?.checked || false,
+      include_terms: $("#cbdbUseTerms")?.checked || false,
+    }),
+  });
+  $("#cbdbResult").textContent = `完成：請求 ${result.requested}，新增 ${result.imported}，略過 ${result.skipped}，無結果 ${result.no_results?.length || 0}，錯誤 ${result.errors?.length || 0}`;
+  await loadTermTypes();
+  await loadTerms();
+}
+
+function displayEntityText(entity) {
+  return entity.display_text || (entity.entity_type === "PER" ? `人名|"${entity.text}"` : entity.text);
+}
+
+renderTimelineEntityChip = function renderTimelineEntityChipPersonAware(entity) {
+  const color = entity.color || entityColor(entity.entity_type);
+  const label = entity.entity_type_label || entityLabel(entity.entity_type);
+  return `<span class="entity-chip colored-entity" style="--entity-color:${escapeHtml(color)}">${escapeHtml(displayEntityText(entity))}｜${escapeHtml(label)}</span>`;
+};
+
+renderTimelineItem = function renderTimelineItemWithAiChat(item) {
+  const timelineId = item.timeline_id || `D${item.document_id}`;
+  const entities = item.entities?.length ? item.entities : parseEntityRefs(item.entity_refs).map((entity) => ({
+    ...entity,
+    entity_type_label: entityLabel(entity.entity_type),
+    color: entityColor(entity.entity_type),
+    display_text: entity.entity_type === "PER" ? `人名|"${entity.text}"` : entity.text,
+  }));
+  const annotations = item.annotations || [];
+  const savedAnalyses = item.ai_analysis_results || [];
+  const targetOptions = [
+    `<option value="event" data-kind="event" data-value="${escapeHtml(item.event_type)}">事件：${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</option>`,
+    ...entities.map((entity) => `<option value="entity:${escapeHtml(entity.id)}" data-kind="entity" data-value="${escapeHtml(entity.text)}" data-entity-id="${escapeHtml(entity.id)}">實體：${escapeHtml(displayEntityText(entity))}</option>`),
+  ];
+  const analysisKey = `${timelineId}:event:${item.event_type}`;
+  const cached = state.aiResults[analysisKey];
+  return `
+    <article class="timeline-item ${state.timelineFocusId === timelineId ? "focused" : ""}" id="timeline-${escapeHtml(timelineId)}">
+      <div class="timeline-head">
+        <span class="node-id">${escapeHtml(timelineId)}</span>
+        <strong>${escapeHtml(item.ce_year || "未知年份")} ｜ ${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</strong>
+        <span class="entity-chip">${escapeHtml(item.event_type)}</span>
+      </div>
+      <p>${highlightText(item.raw_text || "", state.timelineFilters.q || "")}</p>
+      <p class="muted">日期：${escapeHtml(item.historical_dates || "未抽取")} ｜ 機率：${escapeHtml(item.probability)} ｜ 引文：${escapeHtml(item.citation || "")}</p>
+      ${entities.length ? `<div class="chip-row">${entities.map(renderTimelineEntityChip).join("")}</div>` : ""}
+      <div class="ai-toolbar">
+        <select class="ai-target" data-timeline-id="${escapeHtml(timelineId)}">${targetOptions.join("")}</select>
+        <button data-analyze="${escapeHtml(timelineId)}">AI 分析</button>
+        <button class="secondary" data-export-md="${escapeHtml(timelineId)}">匯出 Markdown</button>
+      </div>
+      <div class="research-panel">
+        ${annotations.length ? `<div class="chip-row">${annotations.map(renderAnnotationChip).join("")}</div>` : ""}
+        <div class="correction-grid">
+          <div>
+            <label>修正事件類型</label>
+            <input class="event-correction" data-document-id="${escapeHtml(item.document_id)}" value="${escapeHtml(item.event_type_label || eventLabel(item.event_type))}" />
+          </div>
+          <button data-add-event="${escapeHtml(item.document_id)}">儲存事件修正</button>
+          <div>
+            <label>補充漏掉的實體</label>
+            <input class="entity-correction" data-document-id="${escapeHtml(item.document_id)}" placeholder="文字|類別，例如 夏原吉|人名 或 南京|LOC" />
+          </div>
+          <button data-add-entity="${escapeHtml(item.document_id)}">儲存實體</button>
+        </div>
+        ${savedAnalyses.length ? `<div class="saved-ai">${savedAnalyses.map(renderSavedAnalysis).join("")}</div>` : ""}
+        <div class="ai-chat-panel">
+          <label>追問 AI</label>
+          <textarea class="ai-chat-input" data-timeline-id="${escapeHtml(timelineId)}" placeholder="針對此節點繼續提問..."></textarea>
+          <div class="toolbar">
+            <button data-ai-chat="${escapeHtml(timelineId)}">送出追問</button>
+          </div>
+          <div class="ai-chat-history" id="chat-${escapeHtml(timelineId)}"></div>
+        </div>
+      </div>
+      <div class="ai-result" id="analysis-${escapeHtml(timelineId)}">${cached ? nl2br(cached) : "尚未產生本節點的 AI 分析。"}</div>
+    </article>`;
+};
+
+const baseBindTimelineActionsForChat = bindTimelineActions;
+bindTimelineActions = function bindTimelineActionsWithAiChat() {
+  baseBindTimelineActionsForChat();
+  document.querySelectorAll("[data-ai-chat]").forEach((button) => {
+    button.addEventListener("click", guarded(() => sendAiChat(button.dataset.aiChat)));
+  });
+  document.querySelectorAll("[data-export-md]").forEach((button) => {
+    button.addEventListener("click", guarded(() => exportAiMarkdown(button.dataset.exportMd)));
+  });
+};
+
+async function sendAiChat(timelineId) {
+  const input = document.querySelector(`.ai-chat-input[data-timeline-id="${timelineId}"]`);
+  const message = input?.value.trim();
+  if (!message) return toast("請先輸入追問內容。");
+  const historyNode = document.getElementById(`chat-${timelineId}`);
+  if (historyNode) historyNode.textContent = "AI 回答中...";
+  const result = await api("/api/llm/chat", {
+    method: "POST",
+    body: JSON.stringify({ timeline_id: timelineId, message }),
+  });
+  if (input) input.value = "";
+  if (historyNode) historyNode.innerHTML = renderChatMessages(result.saved_messages || []);
+  toast("追問已保存。");
+}
+
+function renderChatMessages(messages) {
+  return messages.map((item) => {
+    const speaker = item.role === "user" ? "使用者" : "AI";
+    return `<article class="result subtle"><strong>${escapeHtml(speaker)}</strong><p>${nl2br(item.content || "")}</p><p class="muted">${escapeHtml(item.created_at || "")}</p></article>`;
+  }).join("");
+}
+
+async function exportAiMarkdown(timelineId) {
+  const result = await api("/api/llm/export-markdown", {
+    method: "POST",
+    body: JSON.stringify({ timeline_id: timelineId }),
+  });
+  toast(`已匯出 Markdown：${result.filename}`);
+}
+
+const baseRenderTimelineItem = renderTimelineItem;
+renderTimelineItem = function renderTimelineItemWithResearchTools(item) {
+  const timelineId = item.timeline_id || `D${item.document_id}`;
+  const annotations = item.annotations || [];
+  const savedAnalyses = item.ai_analysis_results || [];
+  const extra = `
+    <div class="research-panel">
+      <p class="muted">Citation: ${escapeHtml(item.citation || "")}${item.calendar_dates ? ` / Exact date: ${escapeHtml(item.calendar_dates)}` : ""}${item.date_precisions ? ` / Precision: ${escapeHtml(item.date_precisions)}` : ""}</p>
+      ${annotations.length ? `<div class="chip-row">${annotations.map(renderAnnotationChip).join("")}</div>` : ""}
+      <div class="correction-grid">
+        <div>
+          <label>Correct event type</label>
+          <input class="event-correction" data-document-id="${escapeHtml(item.document_id)}" value="${escapeHtml(item.event_type || "")}" />
+        </div>
+        <button data-add-event="${escapeHtml(item.document_id)}">Save event correction</button>
+        <div>
+          <label>Add missed entity</label>
+          <input class="entity-correction" data-document-id="${escapeHtml(item.document_id)}" placeholder="text|TYPE, e.g. 夏原吉|PER" />
+        </div>
+        <button data-add-entity="${escapeHtml(item.document_id)}">Save entity</button>
+      </div>
+      ${savedAnalyses.length ? `<div class="saved-ai">${savedAnalyses.map(renderSavedAnalysis).join("")}</div>` : ""}
+    </div>`;
+  return baseRenderTimelineItem(item).replace("</article>", `${extra}</article>`);
+};
+
+const baseBindTimelineActions = bindTimelineActions;
+bindTimelineActions = function bindTimelineActionsWithResearchTools() {
+  baseBindTimelineActions();
+  document.querySelectorAll("[data-add-event]").forEach((button) => {
+    button.addEventListener("click", guarded(() => saveEventCorrection(button.dataset.addEvent)));
+  });
+  document.querySelectorAll("[data-add-entity]").forEach((button) => {
+    button.addEventListener("click", guarded(() => saveEntityCorrection(button.dataset.addEntity)));
+  });
+};
+
+function renderAnnotationChip(annotation) {
+  const label = annotation.annotation_type === "event"
+    ? `${annotation.action}: ${annotation.event_type || ""}`
+    : `${annotation.action}: ${annotation.text || ""} ${annotation.entity_type || ""}`;
+  return `<span class="entity-chip annotation-chip">${escapeHtml(label)}</span>`;
+}
+
+function renderSavedAnalysis(item) {
+  return `<article class="result subtle"><strong>Saved AI: ${escapeHtml(item.target_kind)} / ${escapeHtml(item.target_value)}</strong><p>${nl2br(item.summary || "")}</p><p class="muted">${escapeHtml(item.model || "")} ${escapeHtml(item.updated_at || "")}</p></article>`;
+}
+
+async function saveEventCorrection(documentId) {
+  const input = document.querySelector(`.event-correction[data-document-id="${documentId}"]`);
+  const eventType = input?.value.trim();
+  if (!eventType) return toast("Enter an event type first.");
+  await api("/api/annotations", {
+    method: "POST",
+    body: JSON.stringify({ document_id: Number(documentId), annotation_type: "event", action: "confirm", event_type: eventType }),
+  });
+  toast("Event correction saved. Re-run classification to apply it.");
+  await loadTimeline();
+}
+
+async function saveEntityCorrection(documentId) {
+  const input = document.querySelector(`.entity-correction[data-document-id="${documentId}"]`);
+  const value = input?.value.trim() || "";
+  const [text, entityType = "PER"] = value.split("|").map((item) => item.trim());
+  if (!text) return toast("Enter entity text first.");
+  await api("/api/annotations", {
+    method: "POST",
+    body: JSON.stringify({
+      document_id: Number(documentId),
+      annotation_type: "entity",
+      action: "add",
+      text,
+      entity_type: entityType || "PER",
+      start: 0,
+      end: text.length,
+    }),
+  });
+  toast("Entity correction saved. Re-run NER/linking to apply it.");
+  await loadTimeline();
+}
+
+const EVENT_LABELS_ZH = {
+  military: "軍事",
+  appointment: "任官任命",
+  tribute: "朝貢外交",
+  punishment: "刑罰司法",
+  disaster: "災異",
+  finance: "財政賦役",
+  uncategorized: "未分類",
+};
+
+const ENTITY_LABELS_ZH = {
+  PER: "人物",
+  LOC: "地點",
+  OFF: "官位職官",
+  TARGET: "研究對象",
+};
+
+const ENTITY_COLORS_DEFAULT = {
+  PER: "#ad3f28",
+  LOC: "#2f7d55",
+  OFF: "#246b9f",
+  TARGET: "#bc8b38",
+};
+
+state.displaySettings = {
+  event_labels: EVENT_LABELS_ZH,
+  entity_labels: ENTITY_LABELS_ZH,
+  entity_colors: ENTITY_COLORS_DEFAULT,
+};
+state.timelineFacets = { events: [], entities: [] };
+
+function eventLabel(code) {
+  return state.displaySettings.event_labels?.[code] || EVENT_LABELS_ZH[code] || code || "未分類";
+}
+
+function entityLabel(code) {
+  return state.displaySettings.entity_labels?.[code] || ENTITY_LABELS_ZH[code] || code || "未知類別";
+}
+
+function entityColor(code) {
+  return state.displaySettings.entity_colors?.[code] || ENTITY_COLORS_DEFAULT[code] || "#756653";
+}
+
+async function loadDisplaySettings() {
+  try {
+    const settings = await api("/api/display/settings");
+    state.displaySettings = {
+      event_labels: { ...EVENT_LABELS_ZH, ...(settings.event_labels || {}) },
+      entity_labels: { ...ENTITY_LABELS_ZH, ...(settings.entity_labels || {}) },
+      entity_colors: { ...ENTITY_COLORS_DEFAULT, ...(settings.entity_colors || {}) },
+    };
+  } catch (error) {
+    console.warn("Display settings fallback", error);
+  }
+}
+
+const originalRenderTimeline = renderTimeline;
+renderTimeline = function renderTimelineChinese(view) {
+  view.innerHTML = `
+    <div class="card">
+      <h3>時間軸搜尋</h3>
+      <p class="muted">可用原文、時間節點 ID、事件類型、中文事件名稱、實體名稱或實體類別搜尋。</p>
+      <div class="timeline-search-grid">
+        <input id="timelineTextSearch" placeholder="全文搜尋：例如 軍事、官位、地名、T0001 或原文片段" value="${escapeHtml(state.timelineFilters.q || "")}" />
+        <input id="timelineId" placeholder="節點 ID：T0001" value="${escapeHtml(state.timelineFilters.timelineId || "")}" />
+        <input id="timelineEvent" list="timelineEventList" placeholder="事件類型：軍事 / military" value="${escapeHtml(state.timelineFilters.eventType || "")}" />
+        <input id="timelineEntity" list="timelineEntityList" placeholder="實體或類別：南京 / 官位 / OFF" value="${escapeHtml(state.timelineFilters.entity || "")}" />
+      </div>
+      <datalist id="timelineEventList">${(state.timelineFacets.events || []).map((item) => `<option value="${escapeHtml(item.event_type_label || item.event_type)}">${escapeHtml(item.event_type)} (${escapeHtml(item.count)})</option>`).join("")}</datalist>
+      <datalist id="timelineEntityList">${(state.timelineFacets.entities || []).map((item) => `<option value="${escapeHtml(item.text)}">${escapeHtml(item.entity_type_label || item.entity_type)} (${escapeHtml(item.count)})</option>`).join("")}</datalist>
+      <div class="toolbar">
+        <button id="timelineBtn">搜尋時間軸</button>
+        <button id="timelineReset" class="secondary">清除篩選</button>
+      </div>
+    </div>
+    <div id="timelineItems" class="timeline"></div>`;
+  $("#timelineBtn").addEventListener("click", guarded(loadTimeline));
+  ["timelineTextSearch", "timelineId", "timelineEvent", "timelineEntity"].forEach((id) => {
+    $(`#${id}`)?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") guarded(loadTimeline)();
+    });
+  });
+  $("#timelineReset").addEventListener("click", () => {
+    state.timelineFilters = {};
+    state.timelineFocusId = "";
+    renderTimeline($("#view"));
+  });
+  guarded(loadTimeline)();
+};
+
+const originalLoadTimeline = loadTimeline;
+loadTimeline = async function loadTimelineChinese() {
+  const q = $("#timelineTextSearch")?.value.trim() || "";
+  const timelineId = $("#timelineId")?.value.trim() || "";
+  const entity = $("#timelineEntity")?.value.trim() || "";
+  const eventType = $("#timelineEvent")?.value.trim() || "";
+  state.timelineFilters = { q, timelineId, entity, eventType };
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (timelineId) params.set("timeline_id", timelineId);
+  if (entity) params.set("entity", entity);
+  if (eventType) params.set("event_type", eventType);
+  const result = await api(`/api/analytics/timeline?${params.toString()}`);
+  state.timelineFacets = result.facets || state.timelineFacets;
+  if (result.display) {
+    state.displaySettings = {
+      event_labels: { ...EVENT_LABELS_ZH, ...(result.display.event_labels || {}) },
+      entity_labels: { ...ENTITY_LABELS_ZH, ...(result.display.entity_labels || {}) },
+      entity_colors: { ...ENTITY_COLORS_DEFAULT, ...(result.display.entity_colors || {}) },
+    };
+  }
+  const items = result.items || [];
+  $("#timelineItems").innerHTML = items.map(renderTimelineItem).join("") || `<p class="muted">沒有找到符合條件的時間節點。</p>`;
+  bindTimelineActions();
+  focusTimelineNode();
+};
+
+const researchRenderTimelineItem = renderTimelineItem;
+renderTimelineItem = function renderTimelineItemChinese(item) {
+  const timelineId = item.timeline_id || `D${item.document_id}`;
+  const entities = item.entities?.length ? item.entities : parseEntityRefs(item.entity_refs).map((entity) => ({
+    ...entity,
+    entity_type_label: entityLabel(entity.entity_type),
+    color: entityColor(entity.entity_type),
+  }));
+  const annotations = item.annotations || [];
+  const savedAnalyses = item.ai_analysis_results || [];
+  const targetOptions = [
+    `<option value="event" data-kind="event" data-value="${escapeHtml(item.event_type)}">事件：${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</option>`,
+    ...entities.map((entity) => `<option value="entity:${escapeHtml(entity.id)}" data-kind="entity" data-value="${escapeHtml(entity.text)}" data-entity-id="${escapeHtml(entity.id)}">實體：${escapeHtml(entity.text)} (${escapeHtml(entity.entity_type_label || entityLabel(entity.entity_type))})</option>`),
+  ];
+  const analysisKey = `${timelineId}:event:${item.event_type}`;
+  const cached = state.aiResults[analysisKey];
+  return `
+    <article class="timeline-item ${state.timelineFocusId === timelineId ? "focused" : ""}" id="timeline-${escapeHtml(timelineId)}">
+      <div class="timeline-head">
+        <span class="node-id">${escapeHtml(timelineId)}</span>
+        <strong>${escapeHtml(item.ce_year || "未知年份")} ｜ ${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</strong>
+        <span class="entity-chip">${escapeHtml(item.event_type)}</span>
+      </div>
+      <p>${highlightText(item.raw_text || "", state.timelineFilters.q || "")}</p>
+      <p class="muted">日期：${escapeHtml(item.historical_dates || "未抽取")} ｜ 機率：${escapeHtml(item.probability)} ｜ 引文：${escapeHtml(item.citation || "")}</p>
+      ${entities.length ? `<div class="chip-row">${entities.map(renderTimelineEntityChip).join("")}</div>` : ""}
+      <div class="ai-toolbar">
+        <select class="ai-target" data-timeline-id="${escapeHtml(timelineId)}">${targetOptions.join("")}</select>
+        <button data-analyze="${escapeHtml(timelineId)}">AI 分析</button>
+      </div>
+      <div class="research-panel">
+        ${annotations.length ? `<div class="chip-row">${annotations.map(renderAnnotationChip).join("")}</div>` : ""}
+        <div class="correction-grid">
+          <div>
+            <label>修正事件類型</label>
+            <input class="event-correction" data-document-id="${escapeHtml(item.document_id)}" value="${escapeHtml(item.event_type_label || eventLabel(item.event_type))}" />
+          </div>
+          <button data-add-event="${escapeHtml(item.document_id)}">儲存事件修正</button>
+          <div>
+            <label>補充漏掉的實體</label>
+            <input class="entity-correction" data-document-id="${escapeHtml(item.document_id)}" placeholder="文字|類別，例如 南京|LOC 或 夏原吉|PER" />
+          </div>
+          <button data-add-entity="${escapeHtml(item.document_id)}">儲存實體</button>
+        </div>
+        ${savedAnalyses.length ? `<div class="saved-ai">${savedAnalyses.map(renderSavedAnalysis).join("")}</div>` : ""}
+      </div>
+      <div class="ai-result" id="analysis-${escapeHtml(timelineId)}">${cached ? nl2br(cached) : "尚未產生本節點的 AI 分析。"}</div>
+    </article>`;
+};
+
+function renderTimelineEntityChip(entity) {
+  const color = entity.color || entityColor(entity.entity_type);
+  const label = entity.entity_type_label || entityLabel(entity.entity_type);
+  return `<span class="entity-chip colored-entity" style="--entity-color:${escapeHtml(color)}">${escapeHtml(textWithLabel(entity.text, label))}</span>`;
+}
+
+function textWithLabel(text, label) {
+  return `${text}｜${label}`;
+}
+
+function highlightText(text, query) {
+  const safe = escapeHtml(text);
+  if (!query) return safe;
+  const escapedQuery = escapeHtml(query);
+  return safe.replaceAll(escapedQuery, `<mark>${escapedQuery}</mark>`);
+}
+
+const originalLoadCharts = loadCharts;
+loadCharts = async function loadChartsChinese() {
+  const result = await api("/api/analytics/charts");
+  if (result.display) {
+    state.displaySettings = {
+      event_labels: { ...EVENT_LABELS_ZH, ...(result.display.event_labels || {}) },
+      entity_labels: { ...ENTITY_LABELS_ZH, ...(result.display.entity_labels || {}) },
+      entity_colors: { ...ENTITY_COLORS_DEFAULT, ...(result.display.entity_colors || {}) },
+    };
+  }
+  renderBars("#chartEvents", result.by_event, "event_type");
+  renderBars("#chartEntities", result.by_entity_type, "entity_type", (item) => item.entity_names ? `實體：${item.entity_names}` : "");
+  renderBars("#chartYears", result.by_year, "ce_year");
+  renderBars("#chartVolumes", result.by_volume.slice(0, 16), "volume");
+};
+
+const originalRenderBars = renderBars;
+renderBars = function renderBarsWithIdList(selector, items, key, extraText = () => "") {
+  const max = Math.max(1, ...items.map((item) => item.count));
+  $(selector).innerHTML = items.map((item, index) => {
+    const ids = splitCsv(item.timeline_ids);
+    const preview = item.timeline_id_preview || ids.slice(0, 8);
+    const label = item.label || (key === "event_type" ? eventLabel(item[key]) : key === "entity_type" ? entityLabel(item[key]) : item[key] || "未知");
+    const extra = extraText(item);
+    const detailId = `${selector.replace("#", "")}-${index}`;
+    return `
+      <div class="bar">
+        <span>${escapeHtml(label)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(item.count / max) * 100}%"></div></div>
+        <strong>${escapeHtml(item.count)}</strong>
+        <div class="bar-meta">
+          ${ids.length ? `<span>節點 ${escapeHtml(ids.length)} 筆：</span>${preview.map((id) => `<button class="id-chip" data-timeline-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}` : "沒有對應時間節點"}
+          ${ids.length > preview.length ? `<button class="id-list-toggle secondary" data-id-list="${escapeHtml(detailId)}">展開全部</button>` : ""}
+          ${extra ? `<small>${escapeHtml(extra)}</small>` : ""}
+          ${ids.length > preview.length ? `<div class="id-list" id="${escapeHtml(detailId)}" hidden>${ids.map((id) => `<button class="id-chip" data-timeline-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}
+        </div>
+      </div>`;
+  }).join("") || `<p class="muted">沒有統計資料。</p>`;
+  document.querySelectorAll(`${selector} .id-chip`).forEach((button) => {
+    button.addEventListener("click", () => openTimelineId(button.dataset.timelineId));
+  });
+  document.querySelectorAll(`${selector} .id-list-toggle`).forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = document.getElementById(button.dataset.idList);
+      if (!target) return;
+      target.hidden = !target.hidden;
+      button.textContent = target.hidden ? "展開全部" : "收合清單";
+    });
+  });
+};
+
+const originalOpenTimelineId = openTimelineId;
+openTimelineId = function openTimelineIdWithSearch(timelineId) {
+  state.view = "timeline";
+  state.timelineFocusId = timelineId;
+  state.timelineFilters = { timelineId, q: "", entity: "", eventType: "" };
+  render();
+};
+
+const originalRenderSettings = renderSettings;
+renderSettings = function renderSettingsWithDisplay(view) {
+  originalRenderSettings(view);
+  attachDisplaySettingsPanel(view);
+};
+
+function attachDisplaySettingsPanel(view) {
+  view.querySelector(".grid")?.insertAdjacentHTML("beforeend", `
+    <div class="card">
+      <h3>顯示與顏色設定</h3>
+      <p class="muted">可調整事件與實體的中文顯示名稱，也可設定時間軸實體標記顏色。</p>
+      <label>事件類型中文名稱（JSON）</label>
+      <textarea id="eventLabelsJson" class="settings-json"></textarea>
+      <label>實體類別中文名稱（JSON）</label>
+      <textarea id="entityLabelsJson" class="settings-json"></textarea>
+      <label>實體顏色（JSON，HEX 色碼）</label>
+      <textarea id="entityColorsJson" class="settings-json"></textarea>
+      <div class="toolbar">
+        <button id="saveDisplaySettings">儲存顯示設定</button>
+        <button id="resetDisplaySettings" class="secondary">填入預設值</button>
+      </div>
+      <div id="displaySettingsResult" class="result subtle">尚未儲存。</div>
+    </div>`);
+  fillDisplaySettingsForms();
+  $("#saveDisplaySettings")?.addEventListener("click", guarded(saveDisplaySettings));
+  $("#resetDisplaySettings")?.addEventListener("click", () => {
+    state.displaySettings = {
+      event_labels: EVENT_LABELS_ZH,
+      entity_labels: ENTITY_LABELS_ZH,
+      entity_colors: ENTITY_COLORS_DEFAULT,
+    };
+    fillDisplaySettingsForms();
+  });
+}
+
+function fillDisplaySettingsForms() {
+  if ($("#eventLabelsJson")) $("#eventLabelsJson").value = JSON.stringify(state.displaySettings.event_labels || EVENT_LABELS_ZH, null, 2);
+  if ($("#entityLabelsJson")) $("#entityLabelsJson").value = JSON.stringify(state.displaySettings.entity_labels || ENTITY_LABELS_ZH, null, 2);
+  if ($("#entityColorsJson")) $("#entityColorsJson").value = JSON.stringify(state.displaySettings.entity_colors || ENTITY_COLORS_DEFAULT, null, 2);
+}
+
+async function saveDisplaySettings() {
+  const payload = {
+    event_labels: JSON.parse($("#eventLabelsJson").value || "{}"),
+    entity_labels: JSON.parse($("#entityLabelsJson").value || "{}"),
+    entity_colors: JSON.parse($("#entityColorsJson").value || "{}"),
+  };
+  const result = await api("/api/display/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  state.displaySettings = result;
+  $("#displaySettingsResult").textContent = "顯示設定已儲存。時間軸與統計圖重新載入後會套用。";
+}
+
+loadDisplaySettings();
+
+const NAV_LABELS_ZH = {
+  corpus: "語料庫",
+  resources: "知識資源",
+  pipeline: "處理流程",
+  search: "搜尋",
+  timeline: "時間軸",
+  charts: "統計圖",
+  exports: "匯出",
+  settings: "設定",
+};
+
+renderNav = function renderNavChinese() {
+  $("#nav").innerHTML = views
+    .map(([id], index) => `<button class="nav-item ${state.view === id ? "active" : ""}" data-view="${id}"><span>${NAV_LABELS_ZH[id] || id}</span><small>${index + 1}</small></button>`)
+    .join("");
+  document.querySelectorAll(".nav-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.view = button.dataset.view;
+      render();
+    });
+  });
+};
+
+loadStats = async function loadStatsChinese() {
+  const [corpus, charts] = await Promise.all([api("/api/corpus/stats"), api("/api/analytics/charts")]);
+  state.stats = { corpus, charts };
+  $("#stats").innerHTML = [
+    ["段落數", corpus.documents || 0],
+    ["卷數", corpus.volumes || 0],
+    ["字數", corpus.characters || 0],
+    ["事件數", sum(charts.by_event)],
+  ]
+    .map(([label, value]) => `<div class="stat-card"><strong>${escapeHtml(value)}</strong><span>${label}</span></div>`)
+    .join("");
+};
+
+attachModelPanel = function attachModelPanelChinese(view) {
+  view.insertAdjacentHTML("beforeend", `
+    <div class="card">
+      <h3>研究模型與外部資料</h3>
+      <p class="muted">模型與資料會保存在 data/models 或 data/imports。缺少模型時，系統仍會使用安全的本機 fallback。</p>
+      <div class="toolbar">
+        <button id="refreshModels" class="secondary">重新整理狀態</button>
+      </div>
+      <div id="modelStatus" class="results"></div>
+    </div>`);
+  $("#refreshModels")?.addEventListener("click", guarded(loadModelStatus));
+};
+
+renderModelStatusItem = function renderModelStatusItemChinese(item) {
+  return `<article class="result">
+    <strong>${escapeHtml(item.artifact_id)}</strong> <span class="muted">${escapeHtml(item.kind)} / ${escapeHtml(item.status)}</span>
+    <p>${escapeHtml(item.license_note || "")}</p>
+    <p class="muted">${escapeHtml(item.local_path || "")}</p>
+    <div class="toolbar">
+      <button data-fetch-artifact="${escapeHtml(item.artifact_id)}">下載或準備</button>
+      <a href="${escapeHtml(item.source_url)}" target="_blank" rel="noreferrer"><button class="secondary">來源</button></a>
+    </div>
+  </article>`;
+};
+
+renderTimelineItem = function renderTimelineItemChineseClean(item) {
+  const timelineId = item.timeline_id || `D${item.document_id}`;
+  const entities = item.entities?.length ? item.entities : parseEntityRefs(item.entity_refs).map((entity) => ({
+    ...entity,
+    entity_type_label: entityLabel(entity.entity_type),
+    color: entityColor(entity.entity_type),
+    display_text: entity.entity_type === "PER" ? `人名|"${entity.text}"` : entity.text,
+  }));
+  const annotations = item.annotations || [];
+  const savedAnalyses = item.ai_analysis_results || [];
+  const chatMessages = item.ai_chat_messages || [];
+  const targetOptions = [
+    `<option value="event" data-kind="event" data-value="${escapeHtml(item.event_type)}">事件：${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</option>`,
+    ...entities.map((entity) => `<option value="entity:${escapeHtml(entity.id)}" data-kind="entity" data-value="${escapeHtml(entity.text)}" data-entity-id="${escapeHtml(entity.id)}">實體：${escapeHtml(displayEntityText(entity))}</option>`),
+  ];
+  const analysisKey = `${timelineId}:event:${item.event_type}`;
+  const cached = state.aiResults[analysisKey];
+  return `
+    <article class="timeline-item ${state.timelineFocusId === timelineId ? "focused" : ""}" id="timeline-${escapeHtml(timelineId)}">
+      <div class="timeline-head">
+        <span class="node-id">${escapeHtml(timelineId)}</span>
+        <strong>${escapeHtml(item.ce_year || "未知年份")} ｜ ${escapeHtml(item.event_type_label || eventLabel(item.event_type))}</strong>
+        <span class="entity-chip">${escapeHtml(item.event_type)}</span>
+      </div>
+      <p class="timeline-text">${renderTimelineText(item.raw_text || "", state.timelineFilters.q || "", entities)}</p>
+      <p class="muted">日期：${escapeHtml(item.historical_dates || "未抽取")} ｜ 機率：${escapeHtml(item.probability)} ｜ 引文：${escapeHtml(item.citation || "")}</p>
+      ${entities.length ? `<div class="chip-row">${entities.map(renderTimelineEntityChip).join("")}</div>` : ""}
+      <div class="ai-toolbar">
+        <select class="ai-target" data-timeline-id="${escapeHtml(timelineId)}">${targetOptions.join("")}</select>
+        <button data-analyze="${escapeHtml(timelineId)}">AI 分析</button>
+        <button class="secondary" data-export-md="${escapeHtml(timelineId)}">匯出 Markdown</button>
+      </div>
+      <div class="research-panel">
+        ${annotations.length ? `<div class="chip-row">${annotations.map(renderAnnotationChip).join("")}</div>` : ""}
+        <div class="correction-grid">
+          <div>
+            <label>修正事件類型</label>
+            <input class="event-correction" data-document-id="${escapeHtml(item.document_id)}" value="${escapeHtml(item.event_type_label || eventLabel(item.event_type))}" />
+          </div>
+          <button data-add-event="${escapeHtml(item.document_id)}">儲存事件修正</button>
+          <div>
+            <label>補充漏掉的實體</label>
+            <input class="entity-correction" data-document-id="${escapeHtml(item.document_id)}" placeholder="文字|類別，例如 南京|LOC 或 夏原吉|PER" />
+          </div>
+          <button data-add-entity="${escapeHtml(item.document_id)}">儲存實體</button>
+        </div>
+        ${savedAnalyses.length ? `<div class="saved-ai">${savedAnalyses.map(renderSavedAnalysis).join("")}</div>` : ""}
+        <div class="ai-chat-panel">
+          <label>追問 AI</label>
+          <textarea class="ai-chat-input" data-timeline-id="${escapeHtml(timelineId)}" placeholder="針對此節點繼續提問..."></textarea>
+          <div class="toolbar">
+            <button data-ai-chat="${escapeHtml(timelineId)}">送出追問</button>
+          </div>
+          <div class="ai-chat-history" id="chat-${escapeHtml(timelineId)}">${renderChatMessages(chatMessages)}</div>
+        </div>
+      </div>
+      <div class="ai-result" id="analysis-${escapeHtml(timelineId)}">${cached ? nl2br(cached) : "尚未產生本節點的 AI 分析。"}</div>
+    </article>`;
+};
+
+renderTimelineEntityChip = function renderTimelineEntityChipChinese(entity) {
+  const color = entity.color || entityColor(entity.entity_type);
+  const label = entity.entity_type_label || entityLabel(entity.entity_type);
+  const typeClass = entityTypeClass(entity.entity_type);
+  return `<span class="entity-chip colored-entity ${typeClass}" style="--entity-color:${escapeHtml(color)}">${escapeHtml(textWithLabel(displayEntityText(entity), label))}</span>`;
+};
+
+textWithLabel = function textWithLabelChinese(text, label) {
+  return `${text}｜${label}`;
+};
+
+function renderTimelineText(text, query, entities = []) {
+  const ranges = entities
+    .filter((entity) => Number.isInteger(Number(entity.start)) && Number.isInteger(Number(entity.end)) && Number(entity.end) > Number(entity.start))
+    .map((entity) => ({ ...entity, start: Number(entity.start), end: Number(entity.end) }))
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  let cursor = 0;
+  let html = "";
+  for (const entity of ranges) {
+    if (entity.start < cursor || entity.start < 0 || entity.end > text.length) continue;
+    html += renderTextSegment(text.slice(cursor, entity.start), query);
+    html += `<mark class="entity-inline ${entityTypeClass(entity.entity_type)}" title="${escapeHtml(entity.entity_type_label || entityLabel(entity.entity_type))}">${escapeHtml(text.slice(entity.start, entity.end))}</mark>`;
+    cursor = entity.end;
+  }
+  html += renderTextSegment(text.slice(cursor), query);
+  return html;
+}
+
+function renderTextSegment(text, query) {
+  const safe = escapeHtml(text);
+  if (!query) return safe;
+  const safeQuery = escapeHtml(query);
+  return safe.replaceAll(safeQuery, `<mark class="text-hit">${safeQuery}</mark>`);
+}
+
+function entityTypeClass(entityType) {
+  if (entityType === "PER") return "person-entity";
+  const safeType = String(entityType || "unknown").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+  return `entity-${safeType}`;
+}
+
+renderSavedAnalysis = function renderSavedAnalysisChinese(item) {
+  return `<article class="result subtle"><strong>已儲存 AI 分析：${escapeHtml(item.target_kind)} / ${escapeHtml(item.target_value)}</strong><p>${nl2br(item.summary || "")}</p><p class="muted">${escapeHtml(item.model || "")} ${escapeHtml(item.updated_at || "")}</p></article>`;
+};
+
+renderBars = function renderBarsWithChineseIdList(selector, items, key, extraText = () => "") {
+  const max = Math.max(1, ...items.map((item) => item.count));
+  $(selector).innerHTML = items.map((item, index) => {
+    const ids = splitCsv(item.timeline_ids);
+    const preview = item.timeline_id_preview || ids.slice(0, 8);
+    const label = item.label || (key === "event_type" ? eventLabel(item[key]) : key === "entity_type" ? entityLabel(item[key]) : item[key] || "未知");
+    const extra = extraText(item);
+    const detailId = `${selector.replace("#", "")}-${index}`;
+    return `
+      <div class="bar">
+        <span>${escapeHtml(label)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(item.count / max) * 100}%"></div></div>
+        <strong>${escapeHtml(item.count)}</strong>
+        <div class="bar-meta">
+          ${ids.length ? `<span>節點 ${escapeHtml(ids.length)} 筆：</span>${preview.map((id) => `<button class="id-chip" data-timeline-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}` : "沒有對應時間節點"}
+          ${ids.length > preview.length ? `<button class="id-list-toggle secondary" data-id-list="${escapeHtml(detailId)}">展開全部</button>` : ""}
+          ${extra ? `<small>${escapeHtml(extra)}</small>` : ""}
+          ${ids.length > preview.length ? `<div class="id-list" id="${escapeHtml(detailId)}" hidden>${ids.map((id) => `<button class="id-chip" data-timeline-id="${escapeHtml(id)}">${escapeHtml(id)}</button>`).join("")}</div>` : ""}
+        </div>
+      </div>`;
+  }).join("") || `<p class="muted">沒有統計資料。</p>`;
+  document.querySelectorAll(`${selector} .id-chip`).forEach((button) => {
+    button.addEventListener("click", () => openTimelineId(button.dataset.timelineId));
+  });
+  document.querySelectorAll(`${selector} .id-list-toggle`).forEach((button) => {
+    button.addEventListener("click", () => {
+      const target = document.getElementById(button.dataset.idList);
+      if (!target) return;
+      target.hidden = !target.hidden;
+      button.textContent = target.hidden ? "展開全部" : "收合清單";
+    });
+  });
+};
+
+attachDisplaySettingsPanel = function attachDisplaySettingsPanelChinese(view) {
+  view.querySelector(".grid")?.insertAdjacentHTML("beforeend", `
+    <div class="card">
+      <h3>顯示與顏色設定</h3>
+      <p class="muted">調整事件與實體的中文名稱，並設定時間軸上不同實體類別的標記顏色。</p>
+      <label>事件類型中文名稱（JSON）</label>
+      <textarea id="eventLabelsJson" class="settings-json"></textarea>
+      <label>實體類別中文名稱（JSON）</label>
+      <textarea id="entityLabelsJson" class="settings-json"></textarea>
+      <label>實體顏色（JSON，HEX 色碼）</label>
+      <textarea id="entityColorsJson" class="settings-json"></textarea>
+      <div class="toolbar">
+        <button id="saveDisplaySettings">儲存顯示設定</button>
+        <button id="resetDisplaySettings" class="secondary">填入預設值</button>
+      </div>
+      <div id="displaySettingsResult" class="result subtle">尚未儲存。</div>
+    </div>`);
+  fillDisplaySettingsForms();
+  $("#saveDisplaySettings")?.addEventListener("click", guarded(saveDisplaySettings));
+  $("#resetDisplaySettings")?.addEventListener("click", () => {
+    state.displaySettings = {
+      event_labels: EVENT_LABELS_ZH,
+      entity_labels: ENTITY_LABELS_ZH,
+      entity_colors: ENTITY_COLORS_DEFAULT,
+    };
+    fillDisplaySettingsForms();
+  });
+};
+
+saveEventCorrection = async function saveEventCorrectionChinese(documentId) {
+  const input = document.querySelector(`.event-correction[data-document-id="${documentId}"]`);
+  const eventType = input?.value.trim();
+  if (!eventType) return toast("請先輸入事件類型。");
+  await api("/api/annotations", {
+    method: "POST",
+    body: JSON.stringify({ document_id: Number(documentId), annotation_type: "event", action: "confirm", event_type: eventType }),
+  });
+  toast("事件修正已儲存。重新執行分類後會套用。");
+  await loadTimeline();
+};
+
+saveEntityCorrection = async function saveEntityCorrectionChinese(documentId) {
+  const input = document.querySelector(`.entity-correction[data-document-id="${documentId}"]`);
+  const value = input?.value.trim() || "";
+  const [text, entityType = "PER"] = value.split("|").map((item) => item.trim());
+  if (!text) return toast("請先輸入實體文字。");
+  await api("/api/annotations", {
+    method: "POST",
+    body: JSON.stringify({
+      document_id: Number(documentId),
+      annotation_type: "entity",
+      action: "add",
+      text,
+      entity_type: entityType || "PER",
+      start: 0,
+      end: text.length,
+    }),
+  });
+  toast("實體修正已儲存。重新執行 NER/Linking 後會套用。");
+  await loadTimeline();
+};
+
 render();
 guarded(loadStats)();

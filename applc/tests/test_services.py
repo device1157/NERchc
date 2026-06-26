@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 
 from backend.services.embedding import embed_paragraph
+from backend.services.entity_display import entity_display_text, normalize_entity_type
+from backend.services.classifier import _load_event_keywords, classify_text
 from backend.services.linker import similarity
 from backend.services.ner import extract_entities
 from backend.services.preprocess import preprocess_text
@@ -65,6 +67,44 @@ def test_dictionary_ner_extracts_location_and_office() -> None:
     entities = extract_entities("占城國王遣使中書省左丞相李善長宴之", terms)
     assert any(item["entity_type"] == "LOC" and item["text"] == "占城" for item in entities)
     assert any(item["entity_type"] == "OFF" for item in entities)
+
+
+def test_person_name_term_extracts_per_and_display_format() -> None:
+    terms = [
+        {"type": "person_name", "text": "夏原吉", "aliases_json": "[]", "metadata_json": "{}"},
+    ]
+    entities = extract_entities("命夏原吉治水", terms)
+    assert any(item["entity_type"] == "PER" and item["text"] == "夏原吉" for item in entities)
+    assert normalize_entity_type("人名") == "PER"
+    assert entity_display_text("夏原吉", "PER") == '人名|"夏原吉"'
+
+
+def test_office_patterns_do_not_absorb_person_names() -> None:
+    terms = [
+        {"type": "surname", "text": "李", "aliases_json": "[]", "metadata_json": "{}"},
+        {"type": "person_name", "text": "夏原吉", "aliases_json": "[]", "metadata_json": "{}"},
+        {"type": "office", "text": "中書省左丞相", "aliases_json": "[\"左丞相\"]", "metadata_json": "{}"},
+        {"type": "office", "text": "戶部尚書", "aliases_json": "[\"户部尚书\"]", "metadata_json": "{}"},
+    ]
+    entities = extract_entities("命夏原吉為戶部尚書。中書省左丞相李善長宴之", terms)
+    people = {item["text"] for item in entities if item["entity_type"] == "PER"}
+    offices = {item["text"] for item in entities if item["entity_type"] == "OFF"}
+
+    assert {"夏原吉", "李善長"} <= people
+    assert "戶部尚書" in offices
+    assert "中書省左丞相" in offices
+    assert all("夏原吉" not in office and "李善長" not in office for office in offices)
+
+
+def test_event_classifier_uses_phrase_context_for_ambiguous_words() -> None:
+    keywords = _load_event_keywords([])
+
+    assignment = classify_text("命夏原吉治水", keywords, threshold=0.2)
+    assert assignment[0][0] == "appointment"
+    assert all(event_type != "disaster" for event_type, _probability in assignment)
+    assert classify_text("占城遣使來朝貢方物", keywords, threshold=0.2)[0][0] == "tribute"
+    assert classify_text("都督率軍討邊", keywords, threshold=0.2)[0][0] == "military"
+    assert classify_text("永樂二年封朱高熾為皇太子", keywords, threshold=0.2)[0][0] == "appointment"
 
 
 def test_link_similarity_handles_close_forms() -> None:

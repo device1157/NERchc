@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.db import ROOT_DIR, init_db
-from backend.routers import analytics, corpus, exports, llm, pipeline, resources, runs, search
+from backend.routers import annotations, analytics, corpus, display, exports, llm, models, pipeline, resources, runs, search
 
 FRONTEND_DIR = ROOT_DIR / "frontend"
 
@@ -31,6 +31,9 @@ def create_app() -> FastAPI:
     app.include_router(exports.router, prefix="/api/exports", tags=["exports"])
     app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
     app.include_router(llm.router, prefix="/api/llm", tags=["llm"])
+    app.include_router(annotations.router, prefix="/api/annotations", tags=["annotations"])
+    app.include_router(models.router, prefix="/api/models", tags=["models"])
+    app.include_router(display.router, prefix="/api/display", tags=["display"])
 
     if FRONTEND_DIR.exists():
         app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")

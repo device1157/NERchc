@@ -9,6 +9,8 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from backend.db import db, json_loads
+from backend.services.citations import format_citation, timeline_id
+from backend.services.entity_display import enrich_entity_display
 
 router = APIRouter()
 
@@ -26,17 +28,42 @@ def export_jsonl() -> StreamingResponse:
 @router.get("/csv")
 def export_csv() -> StreamingResponse:
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["document_id", "volume", "seq", "ce_year", "events", "entities", "text"])
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "document_id",
+            "timeline_ids",
+            "citation",
+            "source_name",
+            "volume",
+            "seq",
+            "ce_year",
+            "calendar_dates",
+            "date_precision",
+            "events",
+            "entities",
+            "annotations",
+            "ai_analysis",
+            "text",
+        ],
+    )
     writer.writeheader()
     for item in _export_items():
         writer.writerow(
             {
                 "document_id": item["document_id"],
+                "timeline_ids": ",".join(event["timeline_id"] for event in item["events"] if event.get("timeline_id")),
+                "citation": item["citation"],
+                "source_name": item["source_name"],
                 "volume": item["volume"],
                 "seq": item["seq"],
                 "ce_year": ",".join(str(t["ce_year"]) for t in item["time_mentions"] if t.get("ce_year")),
+                "calendar_dates": ",".join(t["calendar_date"] for t in item["time_mentions"] if t.get("calendar_date")),
+                "date_precision": ",".join(sorted({t.get("date_precision") or "" for t in item["time_mentions"] if t.get("date_precision")})),
                 "events": ",".join(event["event_type"] for event in item["events"]),
-                "entities": ",".join(entity["text"] for entity in item["entities"]),
+                "entities": ",".join(entity.get("display_text") or entity["text"] for entity in item["entities"]),
+                "annotations": "; ".join(_summarize_annotation(annotation) for annotation in item["annotations"]),
+                "ai_analysis": " | ".join(result["summary"] for result in item["ai_analysis_results"]),
                 "text": item["text"],
             }
         )
@@ -64,9 +91,24 @@ def _export_items() -> list[dict[str, Any]]:
             ).fetchall()
             times = conn.execute("SELECT * FROM time_mentions WHERE document_id=? ORDER BY start", (doc["id"],)).fetchall()
             events = conn.execute(
-                "SELECT event_type, probability, source FROM event_predictions WHERE document_id=? ORDER BY probability DESC",
+                "SELECT id, event_type, probability, source FROM event_predictions WHERE document_id=? ORDER BY probability DESC",
                 (doc["id"],),
             ).fetchall()
+            annotations = conn.execute(
+                "SELECT * FROM user_annotations WHERE document_id=? ORDER BY id",
+                (doc["id"],),
+            ).fetchall()
+            ai_results = conn.execute(
+                """
+                SELECT timeline_id, target_kind, target_value, model, summary, usage_json, created_at
+                FROM ai_analysis_results
+                WHERE document_id=?
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (doc["id"],),
+            ).fetchall()
+            ce_year = next((row["ce_year"] for row in times if row["ce_year"] is not None), None)
+            doc_dict = dict(doc)
             items.append(
                 {
                     "document_id": doc["id"],
@@ -74,10 +116,21 @@ def _export_items() -> list[dict[str, Any]]:
                     "volume": doc["volume"],
                     "seq": doc["seq"],
                     "text": doc["raw_text"],
+                    "citation": format_citation(doc_dict, ce_year),
                     "meta": json_loads(doc["meta_json"], {}),
                     "time_mentions": [dict(row) for row in times],
-                    "entities": [dict(row) for row in entities],
-                    "events": [dict(row) for row in events],
+                    "entities": [enrich_entity_display(dict(row)) for row in entities],
+                    "events": [{**dict(row), "timeline_id": timeline_id(row["id"])} for row in events],
+                    "annotations": [dict(row) for row in annotations],
+                    "ai_analysis_results": [dict(row) for row in ai_results],
                 }
             )
     return items
+
+
+def _summarize_annotation(annotation: dict[str, Any]) -> str:
+    if annotation.get("annotation_type") == "entity":
+        return f"{annotation.get('action')} entity {annotation.get('text')}:{annotation.get('entity_type')}"
+    if annotation.get("annotation_type") == "event":
+        return f"{annotation.get('action')} event {annotation.get('event_type')}"
+    return f"{annotation.get('action')} {annotation.get('annotation_type')}"

@@ -17,7 +17,7 @@ def utc_now() -> str:
 
 
 def ensure_data_dirs() -> None:
-    for name in ("corpus/raw", "exports", "models", "vectors"):
+    for name in ("corpus/raw", "exports", "imports", "models", "vectors"):
         (DATA_DIR / name).mkdir(parents=True, exist_ok=True)
 
 
@@ -98,6 +98,10 @@ CREATE TABLE IF NOT EXISTS time_mentions (
   lunar_month INTEGER,
   lunar_day INTEGER,
   ce_year INTEGER,
+  calendar_date TEXT,
+  date_precision TEXT NOT NULL DEFAULT 'estimated_year',
+  calendar_source TEXT,
+  calendar_confidence REAL,
   confidence REAL NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -177,6 +181,75 @@ CREATE TABLE IF NOT EXISTS event_predictions (
 CREATE INDEX IF NOT EXISTS idx_event_predictions_doc ON event_predictions(document_id);
 CREATE INDEX IF NOT EXISTS idx_event_predictions_type ON event_predictions(event_type);
 
+CREATE TABLE IF NOT EXISTS user_annotations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  annotation_type TEXT NOT NULL,
+  action TEXT NOT NULL DEFAULT 'add',
+  target_id INTEGER,
+  start INTEGER,
+  end INTEGER,
+  text TEXT,
+  entity_type TEXT,
+  event_type TEXT,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  note TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_annotations_doc ON user_annotations(document_id);
+CREATE INDEX IF NOT EXISTS idx_user_annotations_type ON user_annotations(annotation_type);
+
+CREATE TABLE IF NOT EXISTS ai_analysis_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timeline_id TEXT NOT NULL,
+  event_id INTEGER,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  target_kind TEXT NOT NULL,
+  target_value TEXT NOT NULL,
+  entity_id INTEGER,
+  model TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  usage_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_analysis_timeline ON ai_analysis_results(timeline_id);
+CREATE INDEX IF NOT EXISTS idx_ai_analysis_document ON ai_analysis_results(document_id);
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timeline_id TEXT NOT NULL,
+  event_id INTEGER,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  model TEXT,
+  usage_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_chat_timeline ON ai_chat_messages(timeline_id);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_document ON ai_chat_messages(document_id);
+
+CREATE TABLE IF NOT EXISTS model_artifacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  artifact_id TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  local_path TEXT NOT NULL,
+  status TEXT NOT NULL,
+  license_note TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_artifacts_kind ON model_artifacts(kind);
+
 CREATE TABLE IF NOT EXISTS pipeline_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   step TEXT NOT NULL,
@@ -200,7 +273,28 @@ def init_db() -> None:
     ensure_data_dirs()
     with connect() as conn:
         conn.executescript(SCHEMA)
+        migrate_db(conn)
         seed_default_terms(conn)
+
+
+def migrate_db(conn: sqlite3.Connection) -> None:
+    _ensure_columns(
+        conn,
+        "time_mentions",
+        {
+            "calendar_date": "TEXT",
+            "date_precision": "TEXT NOT NULL DEFAULT 'estimated_year'",
+            "calendar_source": "TEXT",
+            "calendar_confidence": "REAL",
+        },
+    )
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 DEFAULT_TERMS = [

@@ -9,7 +9,7 @@ ENTITY_TO_TERM_TYPES = {
     "LOC": {"location", "target_entity"},
     "OFF": {"office"},
     "TARGET": {"target_entity", "location"},
-    "PER": {"target_entity"},
+    "PER": {"target_entity", "person_name"},
 }
 
 

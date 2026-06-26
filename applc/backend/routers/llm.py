@@ -4,21 +4,24 @@ import json
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.db import db, utc_now
+from backend.db import ROOT_DIR, db, json_dumps, rows_to_dicts, utc_now
+from backend.services.citations import format_citation
+from backend.services.entity_display import entity_display_text
 
 router = APIRouter()
 
-DEFAULT_PROMPT = """請以歷史研究助理的角度分析所選時間軸節點。
-請完成：
-1. 用繁體中文概括史料內容。
-2. 說明所選事件或實體在文本中的角色。
-3. 提取可用於論文章節或資料庫標註的關鍵資訊。
-4. 如文本證據不足，請清楚指出不確定處。"""
+DEFAULT_PROMPT = """你是明實錄研究助手。請根據下列時間軸節點，整理：
+1. 事件性質與可能分類
+2. 相關人物、地點、官職
+3. 此段資料對研究問題的意義
+4. 仍需人工核對的地方
+"""
 
 DEFAULT_SETTINGS = {
     "base_url": "https://api.openai.com/v1",
@@ -46,6 +49,15 @@ class AnalyzeRequest(BaseModel):
     target_kind: str = "event"
     target_value: str
     entity_id: int | None = None
+
+
+class ChatRequest(BaseModel):
+    timeline_id: str
+    message: str = Field(min_length=1)
+
+
+class MarkdownExportRequest(BaseModel):
+    timeline_id: str
 
 
 @router.get("/settings")
@@ -94,7 +106,7 @@ def test_connection(payload: LlmTestRequest | None = None) -> dict[str, Any]:
         settings,
         [
             {"role": "system", "content": "You test whether an OpenAI-compatible API is reachable."},
-            {"role": "user", "content": "請只回覆 OK。"},
+            {"role": "user", "content": "Reply OK."},
         ],
         max_tokens=16,
         temperature=0,
@@ -118,18 +130,88 @@ def analyze_timeline_node(payload: AnalyzeRequest) -> dict[str, Any]:
     result = _chat_completion(
         settings,
         [
-            {"role": "system", "content": "你是一位熟悉明實錄與中國古代史料的研究助理。"},
+            {"role": "system", "content": "你是明實錄與中國歷史資料研究助手。請根據證據回答，不要捏造。"},
             {"role": "user", "content": prompt},
         ],
         max_tokens=900,
         temperature=0.2,
     )
+    summary = _extract_message(result)
+    with db() as conn:
+        _save_analysis_result(conn, context, target, settings, prompt, summary, result.get("usage"))
     return {
         "timeline_id": context["timeline_id"],
         "target": target,
-        "summary": _extract_message(result),
+        "summary": summary,
         "usage": result.get("usage"),
     }
+
+
+@router.get("/results")
+def list_analysis_results(
+    timeline_id: str | None = None,
+    document_id: int | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    conditions = []
+    params: list[Any] = []
+    if timeline_id:
+        conditions.append("timeline_id = ?")
+        params.append(timeline_id)
+    if document_id is not None:
+        conditions.append("document_id = ?")
+        params.append(document_id)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM ai_analysis_results
+            {where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+    return {"items": rows_to_dicts(rows)}
+
+
+@router.post("/chat")
+def chat_about_timeline(payload: ChatRequest) -> dict[str, Any]:
+    with db() as conn:
+        settings = _load_settings(conn)
+        context = _load_timeline_context(conn, payload.timeline_id)
+        analyses = _load_analysis_rows(conn, context["timeline_id"])
+        history = _load_chat_rows(conn, context["timeline_id"])
+    _require_llm_settings(settings)
+    messages = _build_chat_messages(context, analyses, history, payload.message)
+    result = _chat_completion(settings, messages, max_tokens=900, temperature=0.2)
+    answer = _extract_message(result)
+    with db() as conn:
+        _save_chat_message(conn, context, "user", payload.message, settings["model"], None)
+        _save_chat_message(conn, context, "assistant", answer, settings["model"], result.get("usage"))
+        saved = _load_chat_rows(conn, context["timeline_id"])
+    return {
+        "timeline_id": context["timeline_id"],
+        "message": payload.message,
+        "answer": answer,
+        "saved_messages": saved,
+    }
+
+
+@router.post("/export-markdown")
+def export_timeline_markdown(payload: MarkdownExportRequest) -> dict[str, Any]:
+    with db() as conn:
+        context = _load_timeline_context(conn, payload.timeline_id)
+        analyses = _load_analysis_rows(conn, context["timeline_id"])
+        history = _load_chat_rows(conn, context["timeline_id"])
+    out_dir = ROOT_DIR / "Aimd"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{context['timeline_id']}_{timestamp}.md"
+    path = out_dir / filename
+    path.write_text(_markdown_content(context, analyses, history), encoding="utf-8")
+    return {"timeline_id": context["timeline_id"], "path": str(path), "filename": filename}
 
 
 def _load_settings(conn: Any) -> dict[str, str]:
@@ -174,9 +256,9 @@ def _normalize_base_url(base_url: str) -> str:
 
 def _require_llm_settings(settings: dict[str, str]) -> None:
     if not settings.get("api_key"):
-        raise HTTPException(status_code=400, detail="請先在「設定」填寫 API Key。")
+        raise HTTPException(status_code=400, detail="請先在設定頁輸入 LLM API Key。")
     if not settings.get("model"):
-        raise HTTPException(status_code=400, detail="請先在「設定」填寫模型名稱。")
+        raise HTTPException(status_code=400, detail="請先在設定頁輸入模型名稱。")
 
 
 def _chat_completion(
@@ -274,12 +356,177 @@ def _extract_message(result: dict[str, Any]) -> str:
     return text.strip() if isinstance(text, str) else ""
 
 
+def _save_analysis_result(
+    conn: Any,
+    context: dict[str, Any],
+    target: dict[str, Any],
+    settings: dict[str, str],
+    prompt: str,
+    summary: str,
+    usage: Any,
+) -> None:
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO ai_analysis_results
+        (timeline_id, event_id, document_id, target_kind, target_value, entity_id,
+         model, prompt, summary, usage_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            context["timeline_id"],
+            context["event_id"],
+            context["document_id"],
+            target["kind"],
+            target["value"],
+            target.get("entity_id"),
+            settings["model"],
+            prompt,
+            summary,
+            json_dumps(usage or {}),
+            now,
+            now,
+        ),
+    )
+
+
+def _save_chat_message(
+    conn: Any,
+    context: dict[str, Any],
+    role: str,
+    content: str,
+    model: str | None,
+    usage: Any,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO ai_chat_messages
+        (timeline_id, event_id, document_id, role, content, model, usage_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            context["timeline_id"],
+            context["event_id"],
+            context["document_id"],
+            role,
+            content,
+            model,
+            json_dumps(usage or {}),
+            utc_now(),
+        ),
+    )
+
+
+def _load_analysis_rows(conn: Any, timeline_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, target_kind, target_value, model, summary, created_at, updated_at
+        FROM ai_analysis_results
+        WHERE timeline_id = ?
+        ORDER BY updated_at DESC, id DESC
+        """,
+        (timeline_id,),
+    ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def _load_chat_rows(conn: Any, timeline_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, role, content, model, usage_json, created_at
+        FROM ai_chat_messages
+        WHERE timeline_id = ?
+        ORDER BY id
+        """,
+        (timeline_id,),
+    ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def _build_chat_messages(
+    context: dict[str, Any],
+    analyses: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    user_message: str,
+) -> list[dict[str, str]]:
+    summary_text = "\n\n".join(item["summary"] for item in analyses[:3]) or "尚未有 AI 總結。"
+    context_text = _plain_context_text(context)
+    messages = [
+        {
+            "role": "system",
+            "content": "你是明實錄研究助手。請只根據提供的時間軸節點、既有總結與對話紀錄回答；若資料不足，請明確說明。",
+        },
+        {
+            "role": "user",
+            "content": f"時間軸節點資料：\n{context_text}\n\n既有 AI 總結：\n{summary_text}",
+        },
+    ]
+    for item in history[-12:]:
+        role = item["role"] if item["role"] in {"user", "assistant"} else "user"
+        messages.append({"role": role, "content": item["content"]})
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+def _markdown_content(context: dict[str, Any], analyses: list[dict[str, Any]], history: list[dict[str, Any]]) -> str:
+    lines = [
+        f"# AI 總結：{context['timeline_id']}",
+        "",
+        f"- Timeline ID: {context['timeline_id']}",
+        f"- Document ID: {context['document_id']}",
+        f"- Event: {context['event_type']}",
+        f"- Probability: {context['probability']}",
+        f"- Citation: {format_citation(context, context.get('ce_year'))}",
+        f"- CE Year: {context.get('ce_year') or '未知'}",
+        "",
+        "## 原文",
+        "",
+        context["raw_text"],
+        "",
+        "## 日期",
+        "",
+    ]
+    lines.extend(f"- {date['text']} / CE {date.get('ce_year') or '未知'}" for date in context["dates"])
+    lines.extend(["", "## 實體", ""])
+    lines.extend(f"- {entity_display_text(entity['text'], entity['entity_type'])} ({entity['entity_type']})" for entity in context["entities"])
+    lines.extend(["", "## AI 總結", ""])
+    if analyses:
+        for item in analyses:
+            lines.extend([f"### {item['target_kind']} / {item['target_value']}", "", item["summary"], ""])
+    else:
+        lines.extend(["尚未有 AI 總結。", ""])
+    lines.extend(["## 後續追問", ""])
+    if history:
+        for item in history:
+            speaker = "使用者" if item["role"] == "user" else "AI"
+            lines.extend([f"### {speaker} ({item['created_at']})", "", item["content"], ""])
+    else:
+        lines.extend(["尚未有追問紀錄。", ""])
+    return "\n".join(lines)
+
+
+def _plain_context_text(context: dict[str, Any]) -> str:
+    entity_text = "、".join(entity_display_text(entity["text"], entity["entity_type"]) for entity in context["entities"]) or "無"
+    date_text = "、".join(f"{date['text']} / CE {date.get('ce_year') or '未知'}" for date in context["dates"]) or "無"
+    return "\n".join(
+        [
+            f"Timeline ID: {context['timeline_id']}",
+            f"Event: {context['event_type']}",
+            f"Probability: {context['probability']}",
+            f"Volume/Seq: {context.get('volume') or '未知'} / {context.get('seq')}",
+            f"Dates: {date_text}",
+            f"Entities: {entity_text}",
+            f"Text: {context['raw_text']}",
+        ]
+    )
+
+
 def _load_timeline_context(conn: Any, timeline_id: str) -> dict[str, Any]:
     event_id = _timeline_id_to_event_id(timeline_id)
     row = conn.execute(
         """
         SELECT ep.id AS event_id, ep.document_id, ep.event_type, ep.probability, ep.source,
-               d.volume, d.seq, d.raw_text
+               d.source_name, d.volume, d.seq, d.raw_text
         FROM event_predictions ep
         JOIN documents d ON d.id = ep.document_id
         WHERE ep.id = ?
@@ -311,7 +558,10 @@ def _load_timeline_context(conn: Any, timeline_id: str) -> dict[str, Any]:
     ).fetchall()
     context["timeline_id"] = _format_timeline_id(context["event_id"])
     context["dates"] = [dict(item) for item in dates]
-    context["entities"] = [dict(item) for item in entities]
+    context["entities"] = [
+        {**dict(item), "display_text": entity_display_text(item["text"], item["entity_type"])}
+        for item in entities
+    ]
     context["ce_year"] = next((item["ce_year"] for item in context["dates"] if item["ce_year"] is not None), None)
     return context
 
@@ -344,11 +594,10 @@ def _resolve_target(context: dict[str, Any], payload: AnalyzeRequest) -> dict[st
 
 
 def _build_analysis_prompt(template: str, context: dict[str, Any], target: dict[str, Any]) -> str:
-    entity_text = "、".join(
-        f"{entity['text']}({entity['entity_type']})" for entity in context["entities"]
-    ) or "無"
+    entity_text = "、".join(entity_display_text(entity["text"], entity["entity_type"]) for entity in context["entities"]) or "無"
     date_text = "、".join(
-        f"{date['text']}{f' / CE {date['ce_year']}' if date['ce_year'] else ''}" for date in context["dates"]
+        f"{date['text']}{f' / CE {date['ce_year']}' if date['ce_year'] else ''}"
+        for date in context["dates"]
     ) or "無"
     variables = {
         "timeline_id": context["timeline_id"],
@@ -358,29 +607,29 @@ def _build_analysis_prompt(template: str, context: dict[str, Any], target: dict[
         "target_value": target["value"],
         "event_type": context["event_type"],
         "probability": context["probability"],
-        "volume": context.get("volume") or "未分卷",
+        "volume": context.get("volume") or "未知",
         "seq": context.get("seq"),
-        "ce_year": context.get("ce_year") or "未定年",
+        "ce_year": context.get("ce_year") or "未知",
         "historical_dates": date_text,
         "entities": entity_text,
         "text": context["raw_text"],
     }
     context_text = "\n".join(
         [
-            f"時間軸ID：{variables['timeline_id']}",
-            f"分析對象：{variables['target_kind']} / {variables['target_value']}",
-            f"事件類型：{variables['event_type']}（P={variables['probability']}）",
-            f"卷次：{variables['volume']}，段落序號：{variables['seq']}",
-            f"年份/日期：{variables['historical_dates']}",
-            f"相關實體：{variables['entities']}",
-            f"原文：{variables['text']}",
+            f"Timeline ID: {variables['timeline_id']}",
+            f"分析目標: {variables['target_kind']} / {variables['target_value']}",
+            f"事件類型: {variables['event_type']} (p={variables['probability']})",
+            f"卷/序號: {variables['volume']} / {variables['seq']}",
+            f"日期: {variables['historical_dates']}",
+            f"實體: {variables['entities']}",
+            f"原文: {variables['text']}",
         ]
     )
     try:
         instruction = template.format_map(_SafeFormatDict(variables))
     except ValueError:
         instruction = template
-    return f"{instruction}\n\n【分析資料】\n{context_text}"
+    return f"{instruction}\n\n節點資料：\n{context_text}"
 
 
 class _SafeFormatDict(dict[str, Any]):

@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from backend.db import db, utc_now
+from backend.services.calendar import convert_exact_date
 
 REIGN_START = {
     "洪武": 1368,
@@ -136,8 +137,9 @@ def run_time_extraction() -> dict[str, Any]:
                 conn.execute(
                     """
                     INSERT INTO time_mentions
-                    (document_id, start, end, text, reign, ganzhi, lunar_month, lunar_day, ce_year, confidence, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (document_id, start, end, text, reign, ganzhi, lunar_month, lunar_day, ce_year,
+                     calendar_date, date_precision, calendar_source, calendar_confidence, confidence, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         doc["id"],
@@ -149,6 +151,10 @@ def run_time_extraction() -> dict[str, Any]:
                         item.get("lunar_month"),
                         item.get("lunar_day"),
                         item.get("ce_year"),
+                        item.get("calendar_date"),
+                        item.get("date_precision", "estimated_year"),
+                        item.get("calendar_source"),
+                        item.get("calendar_confidence"),
                         item["confidence"],
                         now,
                     ),
@@ -181,6 +187,20 @@ def extract_time_mentions(text: str) -> list[dict[str, Any]]:
             "ce_year": ce_year,
             "confidence": 0.88 if ce_year else 0.55,
         }
+        conversion = convert_exact_date(
+            ce_year,
+            item["lunar_month"],
+            item["lunar_day"],
+            item["ganzhi"],
+        )
+        item.update(
+            {
+                "calendar_date": conversion.calendar_date,
+                "date_precision": conversion.date_precision,
+                "calendar_source": conversion.calendar_source,
+                "calendar_confidence": conversion.calendar_confidence,
+            }
+        )
         results.append(item)
         occupied.append((match.start(), match.end()))
     for match in GANZHI_RE.finditer(text):
@@ -192,6 +212,9 @@ def extract_time_mentions(text: str) -> list[dict[str, Any]]:
                 "end": match.end(),
                 "text": match.group(0),
                 "ganzhi": match.group(0),
+                "date_precision": "unknown",
+                "calendar_source": "ganzhi_only",
+                "calendar_confidence": 0.1,
                 "confidence": 0.35,
             }
         )
